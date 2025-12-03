@@ -1,0 +1,630 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<expert_prompt>
+  <project_title>Advanced Custom Meshifying 3D Slicer for Lamp Printing Business</project_title>
+  <project_description>
+    Create a comprehensive Python application that converts 3D models (STL files) into custom G-code using a specialized meshifying vase mode for unique lamp printing applications. This is a PhD-level implementation with full modular design, performance optimization, and professional documentation.
+  </project_description>
+  
+  <primary_objective>
+    <goal>Convert STL (ASCII/text) or any 3D model into G-code using custom meshifying vase mode</goal>
+    <application>Unique lamp 3D printing business with specialized mesh pattern requirements</application>
+  </primary_objective>
+  
+  <core_functionality_requirements>
+    <requirement>
+      <id>001</id>
+      <category>STL_Model_Processing</category>
+      <description>Read and process STL models from current directory with interactive file selection</description>
+      <specifications>
+        <input_type>STL files (ASCII or binary)</input_type>
+        <interface>Interactive file selection menu</interface>
+        <file_selection_options>
+          <option>1. lamp1.stl</option>
+          <option>2. lamp2.stl</option>
+          <option>...</option>
+        </file_selection_options>
+        <directory_handling>Current working directory</directory_handling>
+      </specifications>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <category>Custom_Meshifying_Algorithm</category>
+      <description>Implement specialized mesh pattern algorithm that creates holes in printed objects</description>
+      <specifications>
+        <algorithm_type>Custom meshifying vase mode</algorithm_type>
+        <pattern_logic>
+          <example>
+            <layer>Layer 1</layer>
+            <pattern>0, 1, 0, 1, 0</pattern>
+            <axis>Y-axis coordinate transformation</axis>
+          </example>
+          <example>
+            <layer>Layer 2</layer>
+            <pattern>1, 0, 1, 0, 1</pattern>
+            <axis>Y-axis coordinate transformation</axis>
+          </example>
+        </pattern_logic>
+        <application>
+          <application_type>Plane model example</application_type>
+          <result>Mesh pattern with holes throughout the print</result>
+        </application>
+        <special_considerations>
+          <consideration>Apply to vases and lampshades</consideration>
+          <consideration>Non-watertight models</consideration>
+        </special_considerations>
+      </specifications>
+    </requirement>
+    
+    <requirement>
+      <id>003</id>
+      <category>Dimension_Preservation</category>
+      <description>Maintain critical inner dimensions during meshification process</description>
+      <specifications>
+        <critical_dimensions>
+          <dimension>Base diameter: 90mm</dimension>
+          <dimension>Mounting points: 90mm</dimension>
+        </critical_dimensions>
+        <preservation_methods>
+          <method>Inner diameter integrity</method>
+          <method>Base structure maintenance</method>
+          <method>Mounting point preservation</method>
+        </preservation_methods>
+      </specifications>
+    </requirement>
+    
+    <requirement>
+      <id>004</id>
+      <category>Progressive_Mesh_Design</category>
+      <description>Implement progressive mesh pattern that starts with smaller gaps at bottom</description>
+      <specifications>
+        <base_height>
+          <value>2-3 centimeters</value>
+          <description>From bottom of model</description>
+        </base_height>
+        <mesh_growth>
+          <description>Gradual increase in mesh size</description>
+          <pattern>Smaller gaps at bottom, larger gaps at top</pattern>
+        </mesh_growth>
+      </specifications>
+    </requirement>
+    
+    <requirement>
+      <id>005</id>
+      <category>G_Code_Generation</category>
+      <description>Generate comprehensive G-code with verbose troubleshooting information</description>
+      <specifications>
+        <output_format>G-code with proper syntax</output_format>
+        <verbosity>High verbosity for debugging</verbosity>
+        <coordinate_system>
+          <origin>Bottom left origin</origin>
+          <build_volume>220x220x280mm</build_volume>
+          <centering>Center on build plate</centering>
+        </coordinate_system>
+        <debugging>
+          <step_by_step>Progressive processing information</step_by_step>
+          <detailed_logging>Detailed debugging output</detailed_logging>
+          <error_handling>Clear error messages</error_handling>
+        </debugging>
+      </specifications>
+    </requirement>
+  </core_functionality_requirements>
+  
+  <configuration_parameters>
+    <parameter>
+      <id>001</id>
+      <name>Nozzle Size</name>
+      <default>1mm</default>
+      <type>float</type>
+      <description>Printer nozzle diameter for proper calculations</description>
+      <validation>Must be positive value</validation>
+    </parameter>
+    
+    <parameter>
+      <id>002</id>
+      <name>Layer Thickness</name>
+      <default>0.4mm</default>
+      <type>float</type>
+      <description>Print layer thickness for mesh pattern calculations</description>
+      <validation>Must be positive value</validation>
+    </parameter>
+    
+    <parameter>
+      <id>003</id>
+      <name>Base Height</name>
+      <default>2-3cm</default>
+      <type>float</type>
+      <description>Height of bottom layer with less mesh pattern</description>
+      <validation>Must be positive value</validation>
+    </parameter>
+    
+    <parameter>
+      <id>004</id>
+      <name>Total Zigzag Points</name>
+      <default>dynamic</default>
+      <type>integer</type>
+      <description>Number of zigzag points per circle layer</description>
+      <dynamic_calculation>Based on model width at different layer sizes</dynamic_calculation>
+      <validation>Must be positive integer</validation>
+    </parameter>
+    
+    <parameter>
+      <id>005</id>
+      <name>Nozzle Temperature</name>
+      <default>260°C</default>
+      <type>integer</type>
+      <description>Extruder temperature setting</description>
+      <validation>Must be within printer limits</validation>
+    </parameter>
+    
+    <parameter>
+      <id>006</id>
+      <name>Bed Temperature</name>
+      <default>65°C</default>
+      <type>integer</type>
+      <description>Bed temperature setting</description>
+      <validation>Must be within printer limits</validation>
+    </parameter>
+    
+    <parameter>
+      <id>007</id>
+      <name>Print Speed</name>
+      <default>35mm/s</default>
+      <type>integer</type>
+      <description>Printing speed in mm/s</description>
+      <validation>Must be positive value</validation>
+    </parameter>
+    
+    <parameter>
+      <id>008</id>
+      <name>Travel Speed</name>
+      <default>40mm/s</default>
+      <type>integer</type>
+      <description>Travel speed between print moves</description>
+      <validation>Must be positive value</validation>
+    </parameter>
+    
+    <parameter>
+      <id>009</id>
+      <name>Fan Speed</name>
+      <default>25%</default>
+      <type>integer</type>
+      <description>Cooling fan speed percentage</description>
+      <validation>Must be between 0-100%</validation>
+    </parameter>
+    
+    <parameter>
+      <id>010</id>
+      <name>Zigzag Offset</name>
+      <default>2mm</default>
+      <type>float</type>
+      <description>Mesh hole size (total 4mm between furthest parts)</description>
+      <validation>Must be positive value</validation>
+    </parameter>
+  </configuration_parameters>
+  
+  <technical_specifications>
+    <specification>
+      <id>001</id>
+      <name>Multi-threading</name>
+      <description>Utilize all available processor cores for G-code generation</description>
+      <implementation>
+        <approach>Parallel processing for layer calculations</approach>
+        <approach>Multi-core utilization</approach>
+        <approach>Performance optimization</approach>
+      </implementation>
+    </specification>
+    
+    <specification>
+      <id>002</id>
+      <name>Platform_Specific</name>
+      <description>Optimized for MacMini M4 Pro (ARM64 architecture)</description>
+      <implementation>
+        <architecture>ARM64 optimization</architecture>
+        <performance>Native ARM64 performance</performance>
+        <compatibility>MacOS compatibility</compatibility>
+      </implementation>
+    </specification>
+    
+    <specification>
+      <id>003</id>
+      <name>Build_Volume_Implementation</name>
+      <description>Respect 220x220x280mm build volume with proper coordinate system</description>
+      <implementation>
+        <coordinate_system>Bottom left origin</coordinate_system>
+        <centering>Center model on build plate</centering>
+        <boundary_checking>Build volume boundary enforcement</boundary_checking>
+      </implementation>
+    </specification>
+    
+    <specification>
+      <id>004</id>
+      <name>Purge_Line_Generation</name>
+      <description>Generate additional purge line for leak prevention</description>
+      <implementation>
+        <length>10mm</length>
+        <position>Close to print area</position>
+        <purpose>Leak prevention</purpose>
+      </implementation>
+    </specification>
+  </technical_specifications>
+  
+  <file_structure>
+    <directory>
+      <name>src</name>
+      <description>Source code directory with main application components</description>
+      <files>
+        <file>main.py</file>
+        <file>stl_parser.py</file>
+        <file>mesh_generator.py</file>
+        <file>gcode_generator.py</file>
+        <file>config_manager.py</file>
+        <file>utils.py</file>
+        <file>printer_settings.py</file>
+        <file>mesh_algorithm.py</file>
+        <file>coordinate_transformer.py</file>
+        <file>layer_processor.py</file>
+      </files>
+    </directory>
+    
+    <directory>
+      <name>config</name>
+      <description>Configuration files and settings</description>
+      <files>
+        <file>default_settings.json</file>
+        <file>printer_profiles.json</file>
+        <file>mesh_parameters.json</file>
+      </files>
+    </directory>
+    
+    <directory>
+      <name>output</name>
+      <description>Generated G-code output directory</description>
+      <files>
+        <file>*.gcode</file>
+        <file>logs/</file>
+      </files>
+    </directory>
+    
+    <directory>
+      <name>tests</name>
+      <description>Unit tests and validation scripts</description>
+      <files>
+        <file>test_stl_parser.py</file>
+        <file>test_mesh_algorithm.py</file>
+        <file>test_gcode_generator.py</file>
+      </files>
+    </directory>
+  </file_structure>
+  
+  <implementation_requirements>
+    <requirement>
+      <id>001</id>
+      <name>STL_Parsing</name>
+      <description>Robust STL file parsing with both ASCII and binary support</description>
+      <components>
+        <component>ASCII STL parser</component>
+        <component>Binary STL parser</component>
+        <component>Mesh triangulation</component>
+        <component>Error handling</component>
+      </components>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Meshifying_Algorithm</name>
+      <description>Custom algorithm to create mesh pattern with dynamic zigzag points</description>
+      <components>
+        <component>Layer-by-layer processing</component>
+        <component>Coordinate transformation</component>
+        <component>Dynamic zigzag point calculation</component>
+        <component>Progressive mesh size adjustment</component>
+      </components>
+    </requirement>
+    
+    <requirement>
+      <id>003</id>
+      <name>G_Code_Generation</name>
+      <description>Generate proper G-code with all printer settings and metadata</description>
+      <components>
+        <component>Header with printer settings</component>
+        <component>Initialization commands</component>
+        <component>Layer-by-layer mesh pattern</component>
+        <component>Purge line generation</component>
+        <component>Finalization commands</component>
+        <component>Metadata comments</component>
+      </components>
+    </requirement>
+    
+    <requirement>
+      <id>004</id>
+      <name>Multi-threading</name>
+      <description>Utilize all available processor cores for performance</description>
+      <components>
+        <component>Parallel layer processing</component>
+        <component>Multi-core task distribution</component>
+        <component>Performance monitoring</component>
+      </components>
+    </requirement>
+  </implementation_requirements>
+  
+  <quality_standards>
+    <standard>
+      <id>001</id>
+      <name>Academic_Level_Code_Quality</name>
+      <description>Professional code quality standards</description>
+      <requirements>
+        <requirement>Modular design</requirement>
+        <requirement>Clear documentation</requirement>
+        <requirement>Code organization</requirement>
+        <requirement>Best practices</requirement>
+      </requirements>
+    </standard>
+    
+    <standard>
+      <id>002</id>
+      <name>Comprehensive_Documentation</name>
+      <description>Complete documentation for all components</description>
+      <requirements>
+        <requirement>Module-level documentation</requirement>
+        <requirement>Function-level documentation</requirement>
+        <requirement>User guides</requirement>
+        <requirement>Technical documentation</requirement>
+      </requirements>
+    </standard>
+    
+    <standard>
+      <id>003</id>
+      <name>Robust_Error_Handling</name>
+      <description>Comprehensive error detection and handling</description>
+      <requirements>
+        <requirement>Input validation</requirement>
+        <requirement>Error recovery</requirement>
+        <requirement>Logging</requirement>
+        <requirement>Graceful degradation</requirement>
+      </requirements>
+    </standard>
+    
+    <standard>
+      <id>004</id>
+      <name>Performance_Optimization</name>
+      <description>Optimized for performance and resource usage</description>
+      <requirements>
+        <requirement>Multi-threading</requirement>
+        <requirement>Memory efficiency</requirement>
+        <requirement>Processing speed</requirement>
+        <requirement>Resource management</requirement>
+      </requirements>
+    </standard>
+    
+    <standard>
+      <id>005</id>
+      <name>Test_Coverage</name>
+      <description>Comprehensive testing of all components</description>
+      <requirements>
+        <requirement>Unit tests</requirement>
+        <requirement>Integration tests</requirement>
+        <requirement>Validation tests</requirement>
+        <requirement>Performance tests</requirement>
+      </requirements>
+    </standard>
+  </quality_standards>
+  
+  <development_approach>
+    <approach>
+      <name>Modular_Design</name>
+      <description>Break down functionality into well-defined modules</description>
+      <implementation>
+        <module>STL parsing module</module>
+        <module>Mesh generation module</module>
+        <module>G-code generation module</module>
+        <module>Configuration management</module>
+        <module>Utility functions</module>
+      </implementation>
+    </approach>
+    
+    <approach>
+      <name>Phased_Implementation</name>
+      <description>Implement features in logical phases</description>
+      <phases>
+        <phase>STL parsing and basic processing</phase>
+        <phase>Mesh pattern algorithm implementation</phase>
+        <phase>G-code generation</phase>
+        <phase>Multi-threading integration</phase>
+        <phase>Testing and optimization</phase>
+      </phases>
+    </approach>
+    
+    <approach>
+      <name>Performance_Optimization</name>
+      <description>Optimize for both speed and resource usage</description>
+      <optimizations>
+        <optimization>Multi-threading</optimization>
+        <optimization>Memory management</optimization>
+        <optimization>Algorithm efficiency</optimization>
+        <optimization>Parallel processing</optimization>
+      </optimizations>
+    </approach>
+  </development_approach>
+  
+  <validation_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Input_Validation</name>
+      <description>Validate all user inputs and configuration parameters</description>
+      <validation_types>
+        <type>Range checking</type>
+        <type>Type checking</type>
+        <type>Format validation</type>
+        <type>Boundary validation</type>
+      </validation_types>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Output_Validation</name>
+      <description>Verify G-code output quality and correctness</description>
+      <validation_types>
+        <type>Syntax validation</type>
+        <type>Boundary checking</type>
+        <type>Consistency checking</type>
+        <type>Printer compatibility</type>
+      </validation_types>
+    </requirement>
+  </validation_requirements>
+  
+  <user_interface_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Interactive_Selection</name>
+      <description>Interactive file selection interface</description>
+      <implementation>
+        <file_listing>Display available STL files</file_listing>
+        <selection_method>Numbered selection</selection_method>
+        <confirmation>Selection confirmation</confirmation>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Configuration_Interface</name>
+      <description>Interactive configuration interface</description>
+      <implementation>
+        <parameter_input>Interactive parameter input</parameter_input>
+        <default_values>Pre-filled with sensible defaults</default_values>
+        <validation>Real-time input validation</validation>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>003</id>
+      <name>Progress_Reporting</name>
+      <description>Clear progress indication during processing</description>
+      <implementation>
+        <status_updates>Real-time processing status</status_updates>
+        <progress_bars>Visual progress indicators</progress_bars>
+        <debug_output>Verbose debugging information</debug_output>
+      </implementation>
+    </requirement>
+  </user_interface_requirements>
+  
+  <performance_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Multi-Core_Utilization</name>
+      <description>Efficient use of all available processor cores</description>
+      <implementation>
+        <core_count>Automatic detection of available cores</core_count>
+        <task_distribution>Intelligent load balancing</task_distribution>
+        <parallel_processing>Layer-by-layer parallel processing</parallel_processing>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Memory_Efficiency</name>
+      <description>Optimized memory usage for large models</description>
+      <implementation>
+        <memory_management>Efficient data structures</memory_management>
+        <garbage_collection>Proper cleanup of temporary data</garbage_collection>
+        <streaming_processing>Processing large files in chunks</streaming_processing>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>003</id>
+      <name>Processing_Speed</name>
+      <description>Fast processing times for typical use cases</description>
+      <implementation>
+        <optimization>Algorithmic optimizations</optimization>
+        <caching>Result caching where appropriate</caching>
+        <preprocessing>Preprocessing for repeated operations</preprocessing>
+      </implementation>
+    </requirement>
+  </performance_requirements>
+  
+  <compatibility_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Platform_Compatibility</name>
+      <description>Full compatibility with MacMini M4 Pro</description>
+      <implementation>
+        <architecture>ARM64 native execution</architecture>
+        <os_support>macOS compatibility</os_support>
+        <dependencies>Minimal system dependencies</dependencies>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Printer_Compatibility</name>
+      <description>Generate G-code compatible with standard 3D printers</description>
+      <implementation>
+        <gcode_standard>Standard G-code syntax</gcode_standard>
+        <printer_profiles>Support for common printer profiles</printer_profiles>
+        <settings_validation>Printer setting validation</settings_validation>
+      </implementation>
+    </requirement>
+  </compatibility_requirements>
+  
+  <maintenance_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Code_Maintainability</name>
+      <description>Code structure that supports future enhancements</description>
+      <implementation>
+        <modularity>Well-defined modules</modularity>
+        <extensibility>Easy to extend functionality</extensibility>
+        <documentation>Comprehensive code documentation</documentation>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Configuration_Management</name>
+      <description>Flexible configuration system</description>
+      <implementation>
+        <profile_system>Printer profile management</profile_system>
+        <setting_templates>Template-based settings</setting_templates>
+        <export_import>Configuration export/import</export_import>
+      </implementation>
+    </requirement>
+  </maintenance_requirements>
+  
+  <security_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Input_Security</name>
+      <description>Protect against malicious input files</description>
+      <implementation>
+        <file_validation>STL file integrity checking</file_validation>
+        <memory_safety>Safe memory handling</memory_safety>
+        <input_sanitization>Input sanitization</input_sanitization>
+      </implementation>
+    </requirement>
+  </security_requirements>
+  
+  <deployment_requirements>
+    <requirement>
+      <id>001</id>
+      <name>Deployment_Ready</name>
+      <description>Ready for deployment with minimal setup</description>
+      <implementation>
+        <installer>Simple installation process</installer>
+        <dependencies>Clear dependency requirements</dependencies>
+        <setup_script>Automated setup scripts</setup_script>
+      </implementation>
+    </requirement>
+    
+    <requirement>
+      <id>002</id>
+      <name>Update_Mechanism</name>
+      <description>Support for future updates and improvements</description>
+      <implementation>
+        <version_control>Version tracking</version_control>
+        <update_notification>Update notifications</update_notification>
+        <upgrade_path>Clear upgrade path</upgrade_path>
+      </implementation>
+    </requirement>
+  </deployment_requirements>
+</expert_prompt>

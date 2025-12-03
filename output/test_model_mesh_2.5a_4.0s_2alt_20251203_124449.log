@@ -1,0 +1,54 @@
+MeshVase Slicer - Generation Log
+============================================================
+
+Model Information:
+  Name: mesh
+  Dimensions: 161.7 x 161.7 x 160.0 mm
+  Triangles: 52416
+  Bounds: Vector3(x=-80.8593, y=-80.8593, z=0.0) to Vector3(x=80.8593, y=80.8593, z=160.0)
+
+Layer Statistics:
+  total_layers: 317
+  min_z: 0.5
+  max_z: 159.5
+  avg_diameter: 175.11242754510977
+  min_diameter: 127.27922061357856
+  max_diameter: 228.69824360575532
+  avg_perimeter: 388.9711738859351
+
+Configuration:
+  [printer]
+    build_volume: [220, 220, 280]
+    nozzle_diameter: 1.0
+    nozzle_temp: 260
+    bed_temp: 65
+    filament_diameter: 1.75
+  [print_settings]
+    layer_height: 0.5
+    print_speed: 35
+    travel_speed: 40
+    fan_speed: 100.0
+    max_volumetric_speed: 12.0
+    purge_gap: 20.0
+    purge_length: 50.0
+    purge_side: left
+    vase_mode: True
+    spiral_points_per_degree: 1.2
+  [mesh_settings]
+    wave_amplitude: 2.5
+    wave_spacing: 4.0
+    wave_count: 80
+    wave_smoothness: 10
+    wave_pattern: sine
+    layer_alternation: 2
+    phase_offset: 50.0
+    start_phase: random
+    base_height: 28.0
+    base_mode: fewer_gaps
+    base_transition: exponential
+    diameter_scaling: dynamic
+    curvature_threshold_angle: 30
+    curvature_threshold_distance: 10
+    curvature_amplitude_reduction: 60
+    curvature_frequency_reduction: 40
+    transition_smoothness: medium

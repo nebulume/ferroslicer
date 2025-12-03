@@ -1,0 +1,12 @@
+name: Qwen3LocalCoder
+version: 1.0.0
+schema: v1
+
+models:
+  - uses: ollama/qwen3-coder:30b   # <-- corrected
+    options:
+      allowCodeExecution: true
+
+output:
+  workspace: /Users/haze/meshy-gen2
+  format: file

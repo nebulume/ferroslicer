@@ -1,0 +1,455 @@
+{
+  "project": {
+    "name": "MeshVase Slicer",
+    "version": "1.0.0",
+    "description": "Production-ready 3D mesh slicer that converts STL files into gcode with unique wave patterns for vase mode printing. Creates decorative mesh patterns by adding sinusoidal waves that alternate between layers to form gaps, designed specifically for lamp and vase printing business.",
+    "target_platform": "macOS M4 Pro",
+    "language": "Python 3.11+",
+    "architecture": "modular_multithreaded"
+  },
+  "core_requirements": {
+    "primary_function": "Convert STL ASCII files into Klipper-flavored gcode using vase mode with meshified wave patterns",
+    "key_features": [
+      "Sinusoidal wave pattern generation along perimeter (outward bulges only, never inward)",
+      "Layer alternation with configurable phase offset to create mesh gaps",
+      "Adaptive wave behavior based on geometry curvature and diameter changes",
+      "Base integrity preservation with three transition modes",
+      "Multi-threaded processing utilizing all M4 Pro cores",
+      "Interactive CLI with config file override support",
+      "Automatic OrcaSlicer preview launch",
+      "Comprehensive error handling and validation"
+    ]
+  },
+  "technical_specifications": {
+    "input_format": "STL ASCII only",
+    "output_format": "Klipper-flavored gcode",
+    "gcode_positioning": "G90 (absolute XYZ), M83 (relative E extrusion)",
+    "build_volume": [220, 220, 280],
+    "origin": "bottom_left_corner"
+  },
+  "wave_pattern_specifications": {
+    "description": "Core meshification logic - waves create outward bulges that alternate between layers to form diamond-shaped gaps",
+    "constraints": [
+      "Waves MUST ONLY bulge outward from original perimeter",
+      "Inner diameter must be preserved exactly (critical for 90mm lamp bases)",
+      "Wave peaks extend outward by amplitude amount",
+      "Wave valleys stay at original perimeter (no inward deviation)"
+    ],
+    "parameters": {
+      "wave_amplitude": {
+        "description": "Distance from perimeter to wave peak (outward only)",
+        "default": 2.0,
+        "unit": "mm",
+        "note": "Creates 4mm peak-to-peak when alternating layers offset by 50%"
+      },
+      "wave_spacing": {
+        "description": "Wavelength - peak to peak distance along circumference AND low to low on same layer",
+        "default": 4.0,
+        "unit": "mm"
+      },
+      "wave_smoothness": {
+        "description": "Smoothness scale controlling wave sharpness",
+        "default": 10,
+        "range": [1, 10],
+        "note": "10 = pure sine wave, 1 = sharp triangular/sawtooth"
+      },
+      "wave_pattern_type": {
+        "description": "Wave function type",
+        "default": "sine",
+        "options": ["sine", "triangular", "sawtooth"]
+      },
+      "layer_alternation": {
+        "description": "Number of layers before wave pattern alternates phase",
+        "default": 2,
+        "options": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        "note": "2 = alternates every 2 layers, creates tighter mesh. Higher = larger diamond gaps"
+      },
+      "phase_offset": {
+        "description": "Phase offset percentage between alternating layers",
+        "default": 50,
+        "unit": "percent",
+        "range": [0, 100],
+        "note": "50% creates perfect diamond gaps as shown in reference images"
+      },
+      "start_phase": {
+        "description": "Starting phase behavior",
+        "default": "random",
+        "options": ["random", "aligned"],
+        "note": "random = organic look with no seam, aligned = vertical seam alignment"
+      }
+    }
+  },
+  "base_integrity_system": {
+    "description": "Ensures dimensional accuracy at base for mounting (typically first 28mm)",
+    "base_height": {
+      "description": "Height from bottom where special base handling applies",
+      "default": 28.0,
+      "unit": "mm",
+      "configurable": true
+    },
+    "base_modes": {
+      "tighter_waves": {
+        "description": "More frequent oscillations but smaller amplitude in base region",
+        "implementation": "Increase wave frequency by 150%, reduce amplitude by 60%"
+      },
+      "fewer_gaps": {
+        "description": "Less aggressive mesh pattern - DEFAULT MODE",
+        "default": true,
+        "implementation": "Gradually reduce wave amplitude from 0% at base to 100% at base_height"
+      },
+      "solid_then_mesh": {
+        "description": "Solid layers initially, then transition to mesh",
+        "implementation": "No waves for configured solid height, then transition"
+      }
+    },
+    "transition_profiles": {
+      "linear": {
+        "description": "Linear gradient from base to full mesh",
+        "formula": "amplitude_factor = (current_z / base_height)"
+      },
+      "exponential": {
+        "description": "Exponential curve - smooth visual transition - DEFAULT",
+        "default": true,
+        "formula": "amplitude_factor = (current_z / base_height) ** 2"
+      },
+      "step": {
+        "description": "Step-based increases every 5mm",
+        "formula": "amplitude_factor = floor(current_z / 5) * 0.2, capped at 1.0"
+      }
+    }
+  },
+  "adaptive_wave_behavior": {
+    "curvature_adaptation": {
+      "description": "Waves adapt to model geometry - reduce waves on tight curves, full waves on straight sections",
+      "detection": "Calculate curvature by analyzing direction change rate per mm of travel",
+      "threshold_default": {
+        "angle_change": 30,
+        "distance": 10,
+        "unit": "degrees per mm",
+        "description": "If direction changes > 30° per 10mm, trigger reduction"
+      },
+      "reduction_amount": {
+        "amplitude_reduction": 60,
+        "frequency_reduction": 40,
+        "unit": "percent"
+      },
+      "transition_smoothness": {
+        "description": "How quickly waves adapt when entering/exiting curves",
+        "configurable": true,
+        "options": ["instant", "fast", "medium", "slow"],
+        "default": "medium",
+        "implementation": "Ramp amplitude over N segments where N depends on smoothness setting"
+      }
+    },
+    "diameter_scaling": {
+      "description": "Adjust wave count as layer diameter changes to maintain visual consistency",
+      "scaling_type": {
+        "constant_wavelength": {
+          "description": "Maintain 4mm spacing - fewer waves on smaller diameters",
+          "formula": "wave_count = floor(circumference / wave_spacing)"
+        },
+        "dynamic": {
+          "description": "Adjust wave count using logarithmic scaling for smooth visual progression",
+          "default": true,
+          "formula": "wave_count = base_count * log(current_diameter / base_diameter) + base_count"
+        }
+      }
+    }
+  },
+  "vase_mode_mechanics": {
+    "description": "Maintain pure vase mode characteristics while adding wave patterns",
+    "characteristics": [
+      "Single continuous spiral (no layer boundaries)",
+      "No Z-seam",
+      "No retractions during print",
+      "Single wall thickness"
+    ],
+    "gap_handling": {
+      "extrusion_control": "Stop extruding (E0) during gap sections",
+      "travel_behavior": "Maintain travel path even when not extruding",
+      "filament_priming": "No minimal extrusion - complete stop"
+    },
+    "unsupported_geometry": {
+      "detection": "Automatically detect overhangs and unsupported sections",
+      "behavior": "Stop extruding in air but keep traveling in spiral path",
+      "warning": "Display warning about non-vase-suitable geometry, ask user to continue",
+      "artistic_effect": "Creates 'ghost' effect of original model where geometry doesn't support vase mode"
+    }
+  },
+  "print_settings": {
+    "defaults": {
+      "nozzle_diameter": 1.0,
+      "layer_height": 0.5,
+      "nozzle_temp": 260,
+      "bed_temp": 65,
+      "print_speed": 35,
+      "travel_speed": 40,
+      "fan_speed": 25
+    },
+    "notes": {
+      "layer_height_ratio": "0.5mm layer height with 1mm nozzle allows steeper angles. Typical ratio is 0.5-0.8x nozzle diameter",
+      "all_configurable": "All settings must be easily editable in config.json with inline comments"
+    }
+  },
+  "extrusion_calculation": {
+    "method": "Calculate actual path length for each segment accounting for wave curves",
+    "wall_thickness": "Adjust extrusion rate to maintain consistent wall thickness",
+    "extrusion_width": "Use nozzle_diameter * 1.2 as baseline extrusion width",
+    "formula": "E = (segment_length * layer_height * extrusion_width) / filament_cross_section"
+  },
+  "gcode_generation": {
+    "flavor": "klipper",
+    "positioning": {
+      "xyz": "G90 (absolute positioning)",
+      "e_axis": "M83 (relative extrusion)"
+    },
+    "start_gcode": [
+      "SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=bed_temp VALUE={bed_temp}",
+      "SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=extruder_temp VALUE={nozzle_temp}",
+      "START_PRINT"
+    ],
+    "end_gcode": [
+      "END_PRINT"
+    ],
+    "purge_line": {
+      "description": "10mm straight purge line close to print (in addition to Klipper default)",
+      "distance_from_print": 10,
+      "length": 10,
+      "position": "parallel to front edge of print",
+      "purpose": "Minimize leaking before actual print starts"
+    },
+    "centering": {
+      "build_plate_center": [110, 110],
+      "note": "Ensure gcode centers model on build plate, not at origin corner"
+    },
+    "verbosity": {
+      "requirement": "Add detailed comments in gcode explaining each operation for easy troubleshooting",
+      "examples": [
+        "; Layer 5, Z=2.5mm, Diameter=95mm, Wave count=24",
+        "; Applying 60% amplitude reduction due to high curvature",
+        "; Base transition: 45% of full wave amplitude"
+      ]
+    }
+  },
+  "stl_validation": {
+    "format_check": "Verify STL ASCII format",
+    "manifold_check": {
+      "action": "Check if model is watertight/manifold",
+      "on_fail": "Display warning but allow continuation with user confirmation",
+      "message": "Model is not manifold (has holes/gaps). Continue anyway? [y/n]"
+    },
+    "vase_suitability": {
+      "action": "Analyze if model is suitable for vase mode",
+      "checks": [
+        "Single outer shell",
+        "No internal geometry",
+        "No severe overhangs"
+      ],
+      "on_fail": "Display warning: 'This model may not be suitable for vase mode. Continue? [y/n]'"
+    },
+    "dimension_check": {
+      "build_volume": [220, 220, 280],
+      "action": "Check if model exceeds build volume",
+      "on_exceed_z": "Ask user: 'Model exceeds 280mm height. Squash Z-axis to fit? [y/n]'",
+      "squashing": {
+        "method": "Scale Z-axis only (X and Y remain 100%)",
+        "xy_check": "After squashing, verify model still fits within 220x220mm footprint",
+        "warning": "If XY exceeds after squash, display warning"
+      }
+    }
+  },
+  "cli_interface": {
+    "mode": "interactive_prompts_primary",
+    "alternative_modes": [
+      "command_line_flags override interactive prompts",
+      "config file provides defaults for interactive prompts"
+    ],
+    "workflow": {
+      "step1": "Display all STL files in current directory with numbered selection",
+      "step2": "Interactive prompts for all parameters (reading defaults from config.json)",
+      "step3": "Generate gcode with verbose progress output",
+      "step4": "Display final command with all flags for easy copy/tweak",
+      "step5": "Automatically launch OrcaSlicer with generated gcode"
+    },
+    "flag_support": {
+      "description": "All interactive parameters available as command line flags",
+      "examples": [
+        "--input lamp1.stl",
+        "--nozzle 1.0",
+        "--layer-height 0.5",
+        "--wave-amplitude 2.0",
+        "--wave-spacing 4.0",
+        "--base-height 28",
+        "--base-mode fewer_gaps"
+      ],
+      "behavior": "Flags override config.json defaults, skip interactive prompts for flagged parameters"
+    },
+    "final_output": {
+      "description": "After generation, display full command with all flags",
+      "purpose": "User can copy and modify single parameter without re-running all prompts",
+      "example": "Generated! Command to reproduce:\npython main.py --input lamp1.stl --nozzle 1.0 --layer-height 0.5 --wave-amplitude 2.0 ..."
+    }
+  },
+  "config_file_structure": {
+    "filename": "config.json",
+    "format": "JSON with inline comments for non-numeric string options",
+    "example": {
+      "printer": {
+        "build_volume": [220, 220, 280],
+        "nozzle_diameter": 1.0,
+        "nozzle_temp": 260,
+        "bed_temp": 65
+      },
+      "print_settings": {
+        "layer_height": 0.5,
+        "print_speed": 35,
+        "travel_speed": 40,
+        "fan_speed": 25
+      },
+      "mesh_settings": {
+        "wave_amplitude": 2.0,
+        "wave_spacing": 4.0,
+        "wave_smoothness": 10,
+        "wave_pattern": "sine",
+        "layer_alternation": 2,
+        "phase_offset": 50,
+        "base_height": 28.0,
+        "base_mode": "fewer_gaps",
+        "base_transition": "exponential",
+        "diameter_scaling": "dynamic",
+        "curvature_threshold_angle": 30,
+        "curvature_threshold_distance": 10,
+        "curvature_amplitude_reduction": 60,
+        "curvature_frequency_reduction": 40,
+        "transition_smoothness": "medium"
+      },
+      "orcaslicer_path": "/Applications/OrcaSlicer.app"
+    },
+    "requirement": "All string options must have inline comments listing alternatives"
+  },
+  "output_files": {
+    "gcode_naming": {
+      "format": "{model_name}_mesh_{wave_amp}a_{wave_space}s_{layer_alt}alt_{datetime}.gcode",
+      "example": "lamp1_mesh_2.0a_4.0s_2alt_20241202_143022.gcode"
+    },
+    "log_file": {
+      "filename": "{model_name}_mesh_{datetime}.log",
+      "contents": [
+        "All settings used for generation",
+        "Model statistics (dimensions, layer count, estimated time)",
+        "Warnings and errors encountered",
+        "Generation timestamp and duration"
+      ]
+    }
+  },
+  "preview_system": {
+    "primary_method": "OrcaSlicer automatic launch",
+    "orcaslicer_path": "/Applications/OrcaSlicer.app",
+    "launch_command": "open -a /Applications/OrcaSlicer.app {generated_gcode_file}",
+    "fallback": "If OrcaSlicer not found, display path to gcode file for manual opening"
+  },
+  "performance_optimization": {
+    "multi_threading": {
+      "detection": "Automatically detect available cores on M4 Pro",
+      "strategy": "Process geometry analysis and layer calculations in parallel",
+      "implementation": [
+        "Use Python multiprocessing module",
+        "Divide layers into batches for parallel processing",
+        "Maintain sequential order for final gcode assembly"
+      ]
+    },
+    "layer_processing": {
+      "parallel_geometry": "Calculate perimeters, curvature, and wave patterns in parallel",
+      "sequential_assembly": "Assemble final gcode sequentially to maintain layer order"
+    }
+  },
+  "error_handling": {
+    "requirements": [
+      "Graceful degradation for all error conditions",
+      "Clear, actionable error messages",
+      "Never crash without explanation",
+      "Validate all inputs before processing",
+      "Provide suggestions for fixes"
+    ],
+    "critical_errors": [
+      "STL file not found or corrupted",
+      "Invalid STL format",
+      "Model exceeds build volume with no squash option",
+      "Config file malformed",
+      "OrcaSlicer path invalid"
+    ],
+    "warnings": [
+      "Non-manifold geometry",
+      "Non-vase-suitable model",
+      "Unusual dimensions",
+      "Very long estimated print time"
+    ]
+  },
+  "testing_requirements": {
+    "validation": "After each gcode generation, verify file contains actual gcode, not just headers",
+    "checks": [
+      "File size > 10KB (indicates actual content)",
+      "Contains G1/G0 movement commands",
+      "Contains proper start/end gcode",
+      "Layer count matches expected from model height",
+      "No NaN or infinite values in coordinates"
+    ],
+    "unit_tests": {
+      "stl_parser": "Test parsing various STL formats and error cases",
+      "geometry": "Test curvature calculation, wave generation, diameter scaling",
+      "gcode_generator": "Test output format, coordinate calculations, extrusion values"
+    },
+    "integration_tests": {
+      "full_pipeline": "Test complete STL to gcode conversion with various models",
+      "edge_cases": "Test extreme parameters, tiny/huge models, complex geometries"
+    }
+  },
+  "development_approach": {
+    "approach": [
+      {
+        "name": "Phased_Implementation",
+        "description": "Build in phases with testing between each phase",
+        "phases": {
+          "phase": [
+            "Phase 1: Project structure and configuration system",
+            "Phase 2: STL parser and validation",
+            "Phase 3: Geometry analysis (perimeter extraction, curvature calculation)",
+            "Phase 4: Wave pattern generation (core meshification logic)",
+            "Phase 5: Base integrity and transition system",
+            "Phase 6: Adaptive wave behavior (curvature and diameter adaptation)",
+            "Phase 7: Gcode generation and extrusion calculation",
+            "Phase 8: CLI interface and user interaction",
+            "Phase 9: Multi-threading and performance optimization",
+            "Phase 10: Preview system and OrcaSlicer integration",
+            "Phase 11: Testing, validation, and error handling",
+            "Phase 12: Documentation and final polish"
+          ]
+        }
+      }
+    ]
+  },
+  "code_quality_standards": {
+    "requirements": [
+      "Type hints for all function signatures",
+      "Comprehensive docstrings for all classes and functions",
+      "PEP 8 compliance",
+      "Meaningful variable names (no single letters except iterators)",
+      "Modular design with single responsibility principle",
+      "DRY principle - no code duplication",
+      "Robust error handling with try/except blocks",
+      "Logging at appropriate levels (INFO, WARNING, ERROR)",
+      "Comments explaining complex algorithms",
+      "Constants in UPPER_CASE at module top",
+      "Configuration separation from logic"
+    ]
+  },
+  "critical_implementation_notes": {
+    "wave_direction": "Waves MUST ONLY extend outward from perimeter. Calculate ideal perimeter point, then add wave offset in outward direction (perpendicular to perimeter, pointing away from center)",
+    "layer_alternation": "Track current alternation phase. Every N layers (configurable), flip phase by offset percentage. Default: flip 50% every 2 layers",
+    "curvature_calculation": "Use three consecutive points to calculate angle change. Store running average over small window for smooth transitions",
+    "extrusion_accuracy": "Account for actual arc length in wave curves, not just straight-line distance between points",
+    "centering_math": "Calculate model bounding box, offset all coordinates so center matches build plate center (110, 110)",
+    "vase_mode_spiral": "Continuous Z increase while traversing perimeter - no discrete layer boundaries",
+    "performance": "Use numpy for vector math where possible. Pre-calculate sine wave lookup tables for speed"
+  }
+}

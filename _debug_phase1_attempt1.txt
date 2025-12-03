@@ -1,0 +1,42 @@
+[
+  {
+    "path": "project/__init__.py",
+    "content": "'''\nProject initialization module.\n'''\n\n# This file can be empty or contain project-level imports\n# that are needed across the entire project.\n\n"
+  },
+  {
+    "path": "project/core/__init__.py",
+    "content": "'''\nCore package initialization.\n'''\n\n# This file can be empty or contain package-level imports\n# that are needed across the core module.\n\n"
+  },
+  {
+    "path": "project/core/config.py",
+    "content": "'''\nConfiguration management for the project.\n'''\n\nimport json\nimport os\nfrom typing import Dict, Any\n\n\nclass Config:\n    \"\"\"\n    Manages project configuration.\n    \"\"\"\n\n    def __init__(self, config_path: str = \"config.json\"):\n        self.config_path = config_path\n        self._config = self._load_config()\n\n    def _load_config(self) -> Dict[str, Any]:\n        \"\"\"\n        Load configuration from file.\n        \"\"\"\n        if os.path.exists(self.config_path):\n            with open(self.config_path, \"r\") as f:\n                return json.load(f)\n        else:\n            # Return default configuration\n            return self._get_default_config()\n\n    def _get_default_config(self) -> Dict[str, Any]:\n        \"\"\"\n        Get default configuration.\n        \"\"\"\n        return {\n            \"project_name\": \"AutoGenProject\",\n            \"version\": \"0.1.0\",\n            \"debug\": False,\n            \"output_dir\": \"output\"\n        }\n\n    def get(self, key: str, default: Any = None) -> Any:\n        \"\"\"\n        Get a configuration value.\n        \"\"\"\n        return self._config.get(key, default)\n\n    def set(self, key: str, value: Any) -> None:\n        \"\"\"\n        Set a configuration value.\n        \"\"\"\n        self._config[key] = value\n        self._save_config()\n\n    def _save_config(self) -> None:\n        \"\"\"\n        Save configuration to file.\n        \"\"\"\n        with open(self.config_path, \"w\") as f:\n            json.dump(self._config, f, indent=4)\n\n"
+  },
+  {
+    "path": "project/core/logger.py",
+    "content": "'''\nLogger setup for the project.\n'''\n\nimport logging\nfrom typing import Optional\n\n\ndef setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:\n    \"\"\"\n    Setup a logger with the specified name and level.\n    \"\"\"\n    logger = logging.getLogger(name)\n    logger.setLevel(level)\n\n    # Avoid duplicate handlers\n    if not logger.handlers:\n        handler = logging.StreamHandler()\n        formatter = logging.Formatter(\n            \"%(asctime)s - %(name)s - %(levelname)s - %(message)s\"\n        )\n        handler.setFormatter(formatter)\n        logger.addHandler(handler)\n\n    return logger\n\n"
+  },
+  {
+    "path": "project/core/utils.py",
+    "content": "'''\nUtility functions for the project.\n'''\n\nimport os\nfrom pathlib import Path\nfrom typing import List, Dict, Any\n\n\ndef ensure_directory(path: str) -> None:\n    \"\"\"\n    Ensure that a directory exists.\n    \"\"\"\n    Path(path).mkdir(parents=True, exist_ok=True)\n\n\ndef flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:\n    \"\"\"\n    Flatten a nested dictionary.\n    \"\"\"\n    items = []\n    for k, v in d.items():\n        new_key = f\"{parent_key}{sep}{k}\" if parent_key else k\n        if isinstance(v, dict):\n            items.extend(flatten_dict(v, new_key, sep=sep).items())\n        else:\n            items.append((new_key, v))\n    return dict(items)\n\n\ndef get_project_root() -> str:\n    \"\"\"\n    Get the project root directory.\n    \"\"\"\n    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n\n"
+  },
+  {
+    "path": "project/core/exceptions.py",
+    "content": "'''\nCustom exceptions for the project.\n'''\n\n\nclass ProjectError(Exception):\n    \"\"\"\n    Base exception for the project.\n    \"\"\"\n    pass\n\n\nclass ConfigError(ProjectError):\n    \"\"\"\n    Exception raised when there is an error in configuration.\n    \"\"\"\n    pass\n\n\nclass ValidationError(ProjectError):\n    \"\"\"\n    Exception raised when data validation fails.\n    \"\"\"\n    pass\n\n"
+  },
+  {
+    "path": "project/core/__main__.py",
+    "content": "'''\nMain entry point for the project.\n'''\n\nfrom .config import Config\nfrom .logger import setup_logger\nfrom .utils import get_project_root\n\n\ndef main() -> None:\n    \"\"\"\n    Main function.\n    \"\"\"\n    logger = setup_logger(\"project\")\n    config = Config()\n    root = get_project_root()\n\n    logger.info(f\"Starting project at {root}\")\n    logger.info(f\"Project name: {config.get('project_name')}\")\n    logger.info(f\"Version: {config.get('version')}\")\n\n\nif __name__ == \"__main__\":\n    main()\n\n"
+  },
+  {
+    "path": "config.json",
+    "content": "{\n    \"project_name\": \"AutoGenProject\",\n    \"version\": \"0.1.0\",\n    \"debug\": false,\n    \"output_dir\": \"output\"\n}\n"
+  },
+  {
+    "path": "README.md",
+    "content": "# AutoGenProject\n\nThis project was automatically generated using an LLM-based code generator.\n\n## Features\n\n- Modular structure\n- Configuration management\n- Logging support\n- Utility functions\n- Custom exceptions\n\n## Getting Started\n\n1. Install dependencies:\n\n   ```bash\n   pip install -r requirements.txt\n   ```\n\n2. Run the project:\n\n   ```bash\n   python -m project\n   ```\n\n## Project Structure\n\n```\nproject/\n├── __init__.py\n├── core/\n│   ├── __init__.py\n│   ├── __main__.py\n│   ├── config.py\n│   ├── logger.py\n│   ├── utils.py\n│   └── exceptions.py\n├── config.json\n└── README.md\n```\n\n## License\n\nMIT License\n\n"
+  },
+  {
+    "path": "requirements.txt",
+    "content": "# Project dependencies\n\n# No external dependencies required at this stage\n"
+  }
+]
