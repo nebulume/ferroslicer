@@ -87,7 +87,18 @@ class SpiralGenerator:
 
         logger.info(f"Generating spiral: {num_revolutions:.2f} revolutions, {total_points} points")
 
+        # Progress reporting
+        last_progress = -1
+        progress_interval = max(1, total_points // 20)  # Report every 5%
+
         for point_idx in range(total_points):
+            # Report progress
+            if point_idx % progress_interval == 0 or point_idx == total_points - 1:
+                progress = int((point_idx / total_points) * 100)
+                if progress != last_progress:
+                    logger.info(f"  Spiral generation progress: {progress}%")
+                    last_progress = progress
+
             # Angle around perimeter (0-360, repeats)
             angle = (point_idx % points_per_revolution) * (360 / points_per_revolution)
 
@@ -448,6 +459,7 @@ class SpiralGenerator:
         phase_offset: float = 50,
         wave_asymmetry: bool = False,
         wave_asymmetry_intensity: float = 100,
+        base_integrity_manager = None,
     ) -> List[SpiralPoint]:
         """
         Apply wave pattern to spiral path with optional layer alternation.
@@ -576,6 +588,11 @@ class SpiralGenerator:
             # Calculate raw wave value (-1 to 1)
             wave_raw = self._calculate_wave_value(phase, wave_pattern)
             
+            # Apply base integrity amplitude factor (reduces waves at base)
+            amplitude_factor = 1.0
+            if base_integrity_manager is not None:
+                amplitude_factor = base_integrity_manager.get_amplitude_factor(spiral_point.position.z)
+
             # Apply asymmetry mapping if enabled
             # wave_asymmetry_intensity: 0 = keep raw [-1,1], 100 = full outward-only [0,1]
             asymmetry_blend = wave_asymmetry_intensity / 100.0 if wave_asymmetry else 0.0
@@ -590,13 +607,14 @@ class SpiralGenerator:
                 wave_norm = wave_raw
 
             # Apply amplitude (outward only for asymmetric, bidirectional for symmetric)
+            # Modulate by base integrity factor
             if asymmetry_blend > 0:
                 # Asymmetric mode: only outward, so clamp to [0,1]
                 wave_clamped = max(0, min(1, wave_norm))
-                offset_magnitude = wave_clamped * wave_amplitude
+                offset_magnitude = wave_clamped * wave_amplitude * amplitude_factor
             else:
                 # Symmetric mode: apply in both directions, scale by amplitude
-                offset_magnitude = wave_norm * wave_amplitude
+                offset_magnitude = wave_norm * wave_amplitude * amplitude_factor
 
             # Interpolate layer center based on fractional layer_index
             lower_idx = int(math.floor(spiral_point.layer_index))

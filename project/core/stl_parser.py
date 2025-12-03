@@ -165,8 +165,9 @@ class STLModel:
 
         # Check for internal geometry (very simplified check)
         # In a vase, height should be significantly larger than width/depth
-        if dims.z < max(dims.x, dims.y):
-            warnings.append("Model width/depth exceeds height - may not be suitable for vase mode")
+        max_horizontal = max(dims.x, dims.y)
+        if dims.z < max_horizontal * 0.8:  # Height should be at least 80% of max horizontal dimension
+            warnings.append(f"Model appears squat (height {dims.z:.1f}mm < width/depth {max_horizontal:.1f}mm) - may not be suitable for vase mode")
 
         # Check for extreme aspect ratios
         if dims.z / max(dims.x, dims.y) > 5:

@@ -263,6 +263,10 @@ class GCodeGenerator:
             purge_start = Vector3(purge_x, max(y_start, 0.0), 0.5)
             purge_end = Vector3(purge_x, min(y_end, 220.0), 0.5)
 
+        # Start from back-right corner of build plate (safe position)
+        safe_start = Vector3(219.0, 219.0, 2.0)
+        self._add_move(safe_start, is_travel=True)
+
         # Move to start of purge (travel, no extrusion)
         self._add_move(purge_start, is_travel=True)
 

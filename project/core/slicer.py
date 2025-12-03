@@ -192,7 +192,8 @@ class MeshVaseSlicer:
                 layer_alternation=layer_alt,
                 phase_offset=phase_offset,
                 wave_asymmetry=wave_asymmetry,
-                wave_asymmetry_intensity=wave_asymmetry_intensity
+                wave_asymmetry_intensity=wave_asymmetry_intensity,
+                base_integrity_manager=base_mgr
             )
 
             gcode_content = gcode_gen.generate_gcode(
