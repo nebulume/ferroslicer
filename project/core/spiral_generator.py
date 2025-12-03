@@ -560,10 +560,18 @@ class SpiralGenerator:
             # Calculate wave offset based on angular position around the model.
             # Use a floating waves-per-revolution value so phase is smooth and symmetric.
             # phase (degrees) = angle (deg) * waves_per_rev  (mod 360)
-            phase = (spiral_point.angle * waves_per_rev) % 360.0
+            base_phase = (spiral_point.angle * waves_per_rev) % 360.0
 
-            # DISABLED: Layer alternation and phase offset removed to fix seam interference
-            # (If re-enabled in future, use only discrete phase shifts at cycle boundaries, no blending)
+            # Apply layer alternation and phase offset for diamond mesh pattern
+            # Every N revolutions, apply the phase offset
+            if layer_alternation > 0 and phase_offset > 0:
+                # Determine which alternation cycle we're in (0, 1, 2, ...)
+                cycle = int(spiral_point.revolution / layer_alternation)
+                # On odd cycles, apply the phase shift
+                phase_shift_degrees = (cycle % 2) * (phase_offset / 100.0) * 360.0
+                phase = (base_phase + phase_shift_degrees) % 360.0
+            else:
+                phase = base_phase
 
             # Calculate raw wave value (-1 to 1)
             wave_raw = self._calculate_wave_value(phase, wave_pattern)
