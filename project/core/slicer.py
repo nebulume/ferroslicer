@@ -147,7 +147,10 @@ class MeshVaseSlicer:
             purge_gap=merged_config.get("print_settings", {}).get("purge_gap", 20.0),
             purge_length=merged_config.get("print_settings", {}).get("purge_length", 50.0),
             purge_side=merged_config.get("print_settings", {}).get("purge_side", "left"),
-            max_volumetric_speed=merged_config.get("print_settings", {}).get("max_volumetric_speed", 12.0)
+            max_volumetric_speed=merged_config.get("print_settings", {}).get("max_volumetric_speed", 12.0),
+            skirt_enabled=merged_config.get("print_settings", {}).get("skirt_enabled", True),
+            skirt_distance=merged_config.get("print_settings", {}).get("skirt_distance", 0.0),
+            skirt_height=merged_config.get("print_settings", {}).get("skirt_height", 1)
         )
 
         # If vase mode (spiral) requested, build continuous spiral path

@@ -57,7 +57,10 @@ class Config:
                 "layer_height": 0.5,
                 "print_speed": 35,
                 "travel_speed": 40,
-                "fan_speed": 25
+                "fan_speed": 25,
+                "skirt_enabled": True,
+                "skirt_distance": 0.0,
+                "skirt_height": 1
             },
             "mesh_settings": {
                 "wave_amplitude": 2.0,

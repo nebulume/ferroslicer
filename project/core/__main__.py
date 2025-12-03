@@ -140,6 +140,30 @@ Examples:
             help="Which side of the bed to place the purge line"
         )
 
+        parser.add_argument(
+            "--skirt",
+            action="store_true",
+            help="Enable skirt (default: enabled, one loop around base for adhesion)"
+        )
+
+        parser.add_argument(
+            "--no-skirt",
+            action="store_true",
+            help="Disable skirt"
+        )
+
+        parser.add_argument(
+            "--skirt-distance",
+            type=float,
+            help="Distance from print to skirt (mm, default 0 = touching)"
+        )
+
+        parser.add_argument(
+            "--skirt-height",
+            type=int,
+            help="Number of layers for skirt (default 1)"
+        )
+
         # Mesh settings
         parser.add_argument(
             "--wave-amplitude",
@@ -465,6 +489,18 @@ Examples:
 
         if hasattr(args, 'purge_side') and args.purge_side:
             config_overrides.setdefault('print_settings', {})['purge_side'] = args.purge_side
+
+        # Skirt settings
+        if hasattr(args, 'no_skirt') and args.no_skirt:
+            config_overrides.setdefault('print_settings', {})['skirt_enabled'] = False
+        elif hasattr(args, 'skirt') and args.skirt:
+            config_overrides.setdefault('print_settings', {})['skirt_enabled'] = True
+
+        if hasattr(args, 'skirt_distance') and args.skirt_distance is not None:
+            config_overrides.setdefault('print_settings', {})['skirt_distance'] = args.skirt_distance
+
+        if hasattr(args, 'skirt_height') and args.skirt_height is not None:
+            config_overrides.setdefault('print_settings', {})['skirt_height'] = args.skirt_height
 
         if hasattr(args, 'wave_amplitude') and args.wave_amplitude:
             config_overrides.setdefault('mesh_settings', {})['wave_amplitude'] = args.wave_amplitude

@@ -29,7 +29,10 @@ class GCodeGenerator:
         purge_gap: float = 20.0,
         purge_length: float = 50.0,
         purge_side: str = "left",
-        max_volumetric_speed: float = 12.0
+        max_volumetric_speed: float = 12.0,
+        skirt_enabled: bool = True,
+        skirt_distance: float = 0.0,
+        skirt_height: int = 1
     ):
         """
         Initialize GCode generator.
@@ -57,6 +60,9 @@ class GCodeGenerator:
         self.purge_length = purge_length
         self.purge_side = purge_side
         self.max_volumetric_speed = max_volumetric_speed
+        self.skirt_enabled = skirt_enabled
+        self.skirt_distance = skirt_distance
+        self.skirt_height = skirt_height
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -100,8 +106,12 @@ class GCodeGenerator:
         # Add start GCode
         self._add_start_gcode()
 
-        # Add purge line (use base layer points when available for correct gap)
-        self._add_purge_line(wave_points_by_layer, offset, base_layer_points)
+        # New purge sequence after START_PRINT
+        self._add_new_purge_sequence(wave_points_by_layer, offset, base_layer_points, spiral_points)
+
+        # Add skirt if enabled (before main print starts)
+        if self.skirt_enabled and spiral_points:
+            self._add_skirt(spiral_points, offset)
 
         # If spiral points provided, generate continuous spiral GCode
         if spiral_points:
@@ -183,19 +193,166 @@ class GCodeGenerator:
         self.gcode_lines.append("M83")
         self.gcode_lines.append("")
 
+    def _add_new_purge_sequence(
+        self,
+        wave_points_by_layer: List[List[WavePoint]],
+        offset: Vector3,
+        base_layer_points: List[Vector3] = None,
+        spiral_points: list = None
+    ) -> None:
+        """
+        New purge sequence after START_PRINT:
+        1. Move to (219,219) safe corner
+        2. Retract to prevent oozing
+        3. Move to purge line start (20mm from print start)
+        4. Purge: first 20mm extruding, next 20mm travel-only (oozing)
+        5. Retract again before moving to print
+        
+        Total purge time target: <= 8 seconds
+        """
+        self.gcode_lines.append("; --- NEW PURGE SEQUENCE ---")
+        self.gcode_lines.append("; After START_PRINT: retract, move to purge, extrude+ooze, retract")
+        
+        # Step 1: Move to safe corner (219,219) at Z=2.0
+        safe_corner = Vector3(219.0, 219.0, 2.0)
+        self.gcode_lines.append("; Move to safe corner after START_PRINT")
+        self._add_move(safe_corner, is_travel=True)
+        
+        # Step 2: Retract to prevent oozing during travel to purge
+        self.gcode_lines.append("; Retract to prevent oozing")
+        self.gcode_lines.append("G10")
+        self.gcode_lines.append("")
+        
+        # Step 3: Calculate purge line position (20mm from first print point)
+        # Find first print point
+        if spiral_points:
+            first_print_pos = spiral_points[0].position
+            first_print_x = first_print_pos.x + offset.x
+            first_print_y = first_print_pos.y + offset.y
+        else:
+            # Fallback to first layer point
+            first_layer = wave_points_by_layer[0]
+            first_print_x = first_layer[0].modified.x + offset.x
+            first_print_y = first_layer[0].modified.y + offset.y
+        
+        # Purge line: 40mm long, positioned 20mm away from first print point
+        # Place it to the left of the print start
+        purge_distance = 20.0
+        purge_length = 40.0
+        purge_start = Vector3(first_print_x - purge_distance, first_print_y - purge_length/2, 0.5)
+        purge_mid = Vector3(purge_start.x, purge_start.y + purge_length/2, 0.5)
+        purge_end = Vector3(purge_start.x, purge_start.y + purge_length, 0.5)
+        
+        # Move to purge start
+        self.gcode_lines.append(f"; Move to purge line start ({purge_distance}mm from print)")
+        self._add_move(purge_start, is_travel=True)
+        
+        # Step 4: Purge sequence
+        # First 20mm: extruding at 40mm/s (~0.5 seconds)
+        # Calculate extrusion for 20mm
+        purge_speed = 40.0  # mm/s (consistent purge speed)
+        first_segment_length = 20.0
+        extrusion_first = self._calculate_extrusion(first_segment_length)
+        
+        self.gcode_lines.append("; Unretract and purge first 20mm (extruding)")
+        self.gcode_lines.append("G11")  # Unretract
+        self.gcode_lines.append(f"G1 X{purge_mid.x:.3f} Y{purge_mid.y:.3f} Z{purge_mid.z:.3f} E{extrusion_first:.5f} F{purge_speed * 60:.0f}")
+        self.current_position = purge_mid
+        self.current_extrusion += extrusion_first
+        
+        # Next 20mm: travel only (pressure oozing, no extrusion command)
+        ooze_speed = self.travel_speed  # Use travel speed for ooze segment (~40mm/s)
+        self.gcode_lines.append("; Next 20mm: travel only (oozing from pressure)")
+        self.gcode_lines.append(f"G1 X{purge_end.x:.3f} Y{purge_end.y:.3f} Z{purge_end.z:.3f} F{ooze_speed * 60:.0f}  ; No E command - let pressure ooze")
+        self.current_position = purge_end
+        
+        # Step 5: Retract after purge to prevent stringing to print start
+        self.gcode_lines.append("; Retract after purge to prevent stringing")
+        self.gcode_lines.append("G10")
+        self.gcode_lines.append("")
+
+    def _add_skirt(self, spiral_points: list, offset: Vector3) -> None:
+        """
+        Generate skirt loop around the first revolution of the print.
+        Skirt follows the wavy mesh pattern of the first layer.
+        Printed at Z=layer_height before the main spiral starts.
+        
+        Args:
+            spiral_points: All spiral points
+            offset: Centering offset
+        """
+        if not self.skirt_enabled:
+            return
+        
+        self.gcode_lines.append("; --- SKIRT FOR ADHESION ---")
+        self.gcode_lines.append(f"; One loop at {self.skirt_distance}mm distance, {self.skirt_height} layer(s) tall")
+        
+        # Find first revolution (revolution = 0)
+        first_rev_points = [p for p in spiral_points if p.revolution < 1.0]
+        
+        if not first_rev_points:
+            logger.warning("No first revolution points found for skirt, skipping")
+            return
+        
+        # Sort by angle to ensure continuous path
+        first_rev_points = sorted(first_rev_points, key=lambda p: p.angle)
+        
+        # Calculate centroid of first revolution
+        cx = sum(p.position.x for p in first_rev_points) / len(first_rev_points)
+        cy = sum(p.position.y for p in first_rev_points) / len(first_rev_points)
+        
+        # Generate skirt points by offsetting first revolution points outward
+        skirt_points = []
+        for point in first_rev_points:
+            # Radial direction from centroid
+            dx = point.position.x - cx
+            dy = point.position.y - cy
+            dist = math.sqrt(dx*dx + dy*dy)
+            
+            if dist > 0:
+                # Offset outward by skirt_distance
+                skirt_x = point.position.x + (dx / dist) * self.skirt_distance + offset.x
+                skirt_y = point.position.y + (dy / dist) * self.skirt_distance + offset.y
+                skirt_z = self.layer_height  # Skirt at first layer height
+                skirt_points.append(Vector3(skirt_x, skirt_y, skirt_z))
+        
+        # Add closing point to complete loop
+        if skirt_points:
+            skirt_points.append(skirt_points[0])
+        
+        # Move to skirt start (travel)
+        if skirt_points:
+            self.gcode_lines.append("; Move to skirt start")
+            self._add_move(skirt_points[0], is_travel=True)
+            
+            # Unretract before skirt
+            self.gcode_lines.append("; Unretract before skirt")
+            self.gcode_lines.append("G11")
+            
+            # Print skirt loop
+            for i in range(1, len(skirt_points)):
+                prev_point = skirt_points[i-1]
+                curr_point = skirt_points[i]
+                seg_len = math.sqrt(
+                    (curr_point.x - prev_point.x)**2 + 
+                    (curr_point.y - prev_point.y)**2 + 
+                    (curr_point.z - prev_point.z)**2
+                )
+                extrusion = self._calculate_extrusion(seg_len)
+                self._add_move(curr_point, extrusion_amount=extrusion)
+            
+            # Retract after skirt
+            self.gcode_lines.append("; Retract after skirt")
+            self.gcode_lines.append("G10")
+            self.gcode_lines.append("")
+
     def _add_purge_line(
         self,
         wave_points_by_layer: List[List[WavePoint]],
         offset: Vector3,
         base_layer_points: List[Vector3] = None
     ) -> None:
-        """Add configured purge line a set gap away from the base layer of the model.
-
-        Args:
-            wave_points_by_layer: All layers (unused here but kept for compatibility)
-            offset: Position offset (centering offset)
-            base_layer_points: Points from the first layer (base) to compute base width
-        """
+        """DEPRECATED: Old purge line method. Use _add_new_purge_sequence instead."""
         # Show configured purge length/gap in the comment
         gap = getattr(self, 'purge_gap', 20.0)
         length = getattr(self, 'purge_length', 50.0)
@@ -369,9 +526,26 @@ class GCodeGenerator:
         self.current_position = target
 
     def _add_end_gcode(self) -> None:
-        """Add end GCode."""
+        """Add end GCode with retract, Z raise, and safe park position."""
         self.gcode_lines.append("")
         self.gcode_lines.append("; --- END GCODE ---")
+        self.gcode_lines.append("; Retract filament to prevent oozing")
+        self.gcode_lines.append("G10")
+        
+        # Raise Z by 10mm to clear the print
+        z_raise = 10.0
+        new_z = self.current_position.z + z_raise
+        self.gcode_lines.append(f"; Raise Z by {z_raise}mm to clear print")
+        self.gcode_lines.append(f"G1 Z{new_z:.3f} F{self.travel_speed * 60:.0f}")
+        self.current_position.z = new_z
+        
+        # Move to safe corner (219, 219)
+        self.gcode_lines.append("; Move to safe corner")
+        self.gcode_lines.append(f"G1 X219.000 Y219.000 F{self.travel_speed * 60:.0f}")
+        self.current_position.x = 219.0
+        self.current_position.y = 219.0
+        
+        self.gcode_lines.append("")
         self.gcode_lines.append("END_PRINT")
 
     def _calculate_centering_offset(

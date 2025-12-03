@@ -107,6 +107,28 @@ python3 -m project.core --input lamp1.stl --nozzle 1.0 --nozzle-temp 260 \
 - `--vase-mode` - Enable true spiral vase mode (continuous spiral extrusion, no Z-hops)
 - `--spiral-points-per-degree` - Sampling resolution for spiral path (points per degree, default ~1.2 → ~432 points/revolution)
 
+### Skirt and Purge Line
+- `--skirt` - Enable skirt (default: enabled). One loop around the base for improved adhesion.
+- `--no-skirt` - Disable skirt
+- `--skirt-distance` - Distance from print to skirt in mm (default 0 = touching the print for maximum adhesion)
+- `--skirt-height` - Number of layers for skirt (default 1)
+
+**Purge Behavior:**
+After START_PRINT, the toolhead performs a clean purge sequence:
+1. Moves to safe corner (219,219) and retracts to prevent oozing
+2. Travels to purge line location (20mm from print start)
+3. Purges 40mm total: first 20mm extruding at 40mm/s, next 20mm travel-only (pressure ooze)
+4. Retracts before moving to print start
+5. If skirt enabled, prints one wavy loop at Z=layer_height touching the print base
+6. Starts main print
+
+**End Sequence:**
+After print completes:
+1. Retracts filament to prevent oozing
+2. Raises Z by 10mm to clear the print
+3. Moves toolhead to safe corner (219,219)
+4. Calls END_PRINT macro
+
 ### Spiral Tuning (Advanced)
 Fine-tune spiral geometry for wave symmetry and visual fidelity:
 
@@ -151,7 +173,10 @@ All settings are stored in `config.json` with inline documentation:
     "print_settings": {
         "layer_height": 0.5,
         "print_speed": 35,
-        "travel_speed": 40
+        "travel_speed": 40,
+        "skirt_enabled": true,
+        "skirt_distance": 0.0,
+        "skirt_height": 1
     },
     "mesh_settings": {
         "wave_amplitude": 2.0,
