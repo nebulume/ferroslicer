@@ -593,28 +593,31 @@ class SpiralGenerator:
             if base_integrity_manager is not None:
                 amplitude_factor = base_integrity_manager.get_amplitude_factor(spiral_point.position.z)
 
-            # Apply asymmetry mapping if enabled
-            # wave_asymmetry_intensity: 0 = keep raw [-1,1], 100 = full outward-only [0,1]
-            asymmetry_blend = wave_asymmetry_intensity / 100.0 if wave_asymmetry else 0.0
-            
-            if asymmetry_blend > 0:
-                # Outward-only mapping: [-1,1] -> [0,1]
-                wave_asymmetric = (wave_raw + 1.0) * 0.5
-                # Blend between symmetric and asymmetric
-                wave_norm = wave_raw * (1.0 - asymmetry_blend) + wave_asymmetric * asymmetry_blend
+            # ALWAYS apply waves outward-only to preserve inner diameter
+            # Convert wave from [-1, 1] to [0, 1] range (0 = at perimeter, 1 = full amplitude out)
+            # Asymmetry controls wave SHAPE (symmetric vs steep), not direction
+            if wave_asymmetry:
+                # Asymmetric waves: steep rise, shallow fall (or vice versa)
+                # Map intensity: 0 = symmetric [0,1], 100 = fully asymmetric with sharp transitions
+                asymmetry_blend = wave_asymmetry_intensity / 100.0
+                wave_symmetric = (wave_raw + 1.0) * 0.5  # [-1,1] -> [0,1]
+                # For asymmetric effect, steepen one side of the wave
+                if wave_raw < 0:
+                    # Trough side: make it steeper
+                    wave_asymmetric = (wave_raw + 1.0) * 0.5 * (2.0 - asymmetry_blend)
+                else:
+                    # Peak side: make it more gradual  
+                    wave_asymmetric = 0.5 + (wave_raw * 0.5) / (2.0 - asymmetry_blend)
+                wave_norm = wave_symmetric * (1.0 - asymmetry_blend) + wave_asymmetric * asymmetry_blend
+                wave_norm = max(0.0, min(1.0, wave_norm))
             else:
-                # Pure symmetric wave [-1, 1]
-                wave_norm = wave_raw
+                # Symmetric sine wave, but still outward-only
+                # Map [-1, 1] to [0, 1] where 0 = at original perimeter, 1 = full amplitude outward
+                wave_norm = (wave_raw + 1.0) * 0.5
 
-            # Apply amplitude (outward only for asymmetric, bidirectional for symmetric)
-            # Modulate by base integrity factor
-            if asymmetry_blend > 0:
-                # Asymmetric mode: only outward, so clamp to [0,1]
-                wave_clamped = max(0, min(1, wave_norm))
-                offset_magnitude = wave_clamped * wave_amplitude * amplitude_factor
-            else:
-                # Symmetric mode: apply in both directions, scale by amplitude
-                offset_magnitude = wave_norm * wave_amplitude * amplitude_factor
+            # Apply amplitude: wave_norm is [0,1], so offset is [0, amplitude]
+            # This ensures waves ONLY go outward, never inward
+            offset_magnitude = wave_norm * wave_amplitude * amplitude_factor
 
             # Interpolate layer center based on fractional layer_index
             lower_idx = int(math.floor(spiral_point.layer_index))
