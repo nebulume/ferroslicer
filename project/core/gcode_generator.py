@@ -223,25 +223,36 @@ class GCodeGenerator:
         self.gcode_lines.append("G10")
         self.gcode_lines.append("")
         
-        # Step 3: Calculate purge line position (20mm from first print point)
-        # Find first print point
+        # Step 3: Calculate purge line position (20mm OUTSIDE the print on the RIGHT side)
+        # Find the center of the first layer/revolution to place purge outside
         if spiral_points:
-            first_print_pos = spiral_points[0].position
-            first_print_x = first_print_pos.x + offset.x
-            first_print_y = first_print_pos.y + offset.y
+            # Get first revolution points to find centroid
+            first_rev = [p for p in spiral_points if p.revolution < 1.0]
+            if first_rev:
+                cx = sum(p.position.x for p in first_rev) / len(first_rev) + offset.x
+                cy = sum(p.position.y for p in first_rev) / len(first_rev) + offset.y
+                # Find the rightmost point (maximum X) on the perimeter
+                max_x = max(p.position.x + offset.x for p in first_rev)
+            else:
+                # Fallback if no first revolution
+                first_print_pos = spiral_points[0].position
+                cx = first_print_pos.x + offset.x
+                cy = first_print_pos.y + offset.y
+                max_x = cx
         else:
             # Fallback to first layer point
             first_layer = wave_points_by_layer[0]
-            first_print_x = first_layer[0].modified.x + offset.x
-            first_print_y = first_layer[0].modified.y + offset.y
+            cx = sum(p.modified.x for p in first_layer) / len(first_layer) + offset.x
+            cy = sum(p.modified.y for p in first_layer) / len(first_layer) + offset.y
+            max_x = max(p.modified.x + offset.x for p in first_layer)
         
-        # Purge line: 40mm long, positioned 20mm away from first print point
-        # Place it to the left of the print start
+        # Purge line: 40mm long, positioned 20mm OUTSIDE (to the right of) the rightmost perimeter point
         purge_distance = 20.0
         purge_length = 40.0
-        purge_start = Vector3(first_print_x - purge_distance, first_print_y - purge_length/2, 0.5)
-        purge_mid = Vector3(purge_start.x, purge_start.y + purge_length/2, 0.5)
-        purge_end = Vector3(purge_start.x, purge_start.y + purge_length, 0.5)
+        purge_x = max_x + purge_distance  # 20mm to the right of the rightmost perimeter point
+        purge_start = Vector3(purge_x, cy - purge_length/2, 0.5)
+        purge_mid = Vector3(purge_x, cy, 0.5)
+        purge_end = Vector3(purge_x, cy + purge_length/2, 0.5)
         
         # Move to purge start
         self.gcode_lines.append(f"; Move to purge line start ({purge_distance}mm from print)")
