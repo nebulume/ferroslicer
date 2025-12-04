@@ -522,6 +522,8 @@ class SpiralGenerator:
         if waves_per_rev > 0:
             required_points_per_rev = max(int(360 * orig_ppd), int(math.ceil(waves_per_rev * target_samples_per_wave)))
             required_ppd = max(orig_ppd, required_points_per_rev / 360.0)
+            # Cap resampling to avoid excessive point density (max 3x original for performance)
+            required_ppd = min(required_ppd, orig_ppd * 3.0)
 
         regenerated_spiral = None
         if self.auto_resample_spiral and required_ppd > orig_ppd * 1.01:
@@ -542,6 +544,12 @@ class SpiralGenerator:
             spiral_source = spiral_points
 
         modified_points = []
+        
+        # Pre-compute constants that don't change per-point to reduce redundant calculations
+        asymmetry_blend = wave_asymmetry_intensity / 100.0 if wave_asymmetry else 0.0
+        phase_offset_rad = (phase_offset / 100.0) * 360.0 if (layer_alternation > 0 and phase_offset > 0) else 0.0
+        apply_layer_alt = layer_alternation > 0 and phase_offset > 0
+        has_base_integrity = base_integrity_manager is not None
         
         # Pre-compute layer centers (area-weighted centroid) for consistent wave application
         layer_centers = {}
@@ -575,6 +583,9 @@ class SpiralGenerator:
             
             layer_centers[idx] = (cx, cy)
 
+        # Cache for wave calculations to avoid redundant trig operations
+        wave_cache = {}
+        
         for spiral_point in spiral_source:
             if not spiral_point.is_extrusion:
                 modified_points.append(spiral_point)
@@ -587,21 +598,24 @@ class SpiralGenerator:
 
             # Apply layer alternation and phase offset for diamond mesh pattern
             # Every N revolutions, apply the phase offset
-            if layer_alternation > 0 and phase_offset > 0:
+            if apply_layer_alt:
                 # Determine which alternation cycle we're in (0, 1, 2, ...)
                 cycle = int(spiral_point.revolution / layer_alternation)
                 # On odd cycles, apply the phase shift
-                phase_shift_degrees = (cycle % 2) * (phase_offset / 100.0) * 360.0
+                phase_shift_degrees = (cycle % 2) * phase_offset_rad
                 phase = (base_phase + phase_shift_degrees) % 360.0
             else:
                 phase = base_phase
 
-            # Calculate raw wave value (-1 to 1)
-            wave_raw = self._calculate_wave_value(phase, wave_pattern)
+            # Calculate raw wave value with caching to avoid redundant trig operations
+            phase_key = int(phase * 10)  # Cache key with 0.1 degree precision
+            if phase_key not in wave_cache:
+                wave_cache[phase_key] = self._calculate_wave_value(phase, wave_pattern)
+            wave_raw = wave_cache[phase_key]
             
             # Apply base integrity amplitude factor (reduces waves at base)
             amplitude_factor = 1.0
-            if base_integrity_manager is not None:
+            if has_base_integrity:
                 amplitude_factor = base_integrity_manager.get_amplitude_factor(spiral_point.position.z)
 
             # ALWAYS apply waves outward-only to preserve inner diameter
@@ -609,8 +623,6 @@ class SpiralGenerator:
             # Asymmetry controls wave SHAPE (symmetric vs steep), not direction
             if wave_asymmetry:
                 # Asymmetric waves: steep rise, shallow fall (or vice versa)
-                # Map intensity: 0 = symmetric [0,1], 100 = fully asymmetric with sharp transitions
-                asymmetry_blend = wave_asymmetry_intensity / 100.0
                 wave_symmetric = (wave_raw + 1.0) * 0.5  # [-1,1] -> [0,1]
                 # For asymmetric effect, steepen one side of the wave
                 if wave_raw < 0:

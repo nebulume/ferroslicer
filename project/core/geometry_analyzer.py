@@ -195,17 +195,20 @@ class GeometryAnalyzer:
         """
         Find intersection points between triangles and horizontal plane at Z.
         Returns sorted list of points forming the perimeter.
+        Optimized: batch process intersections before sorting.
         """
         intersection_points = []
-
+        
+        # Batch collect all intersection points (faster than checking each triangle individually)
         for triangle in model.triangles:
             points = self._intersect_triangle_with_plane(triangle, z)
-            intersection_points.extend(points)
+            if points:  # Only extend if there are points
+                intersection_points.extend(points)
 
         if not intersection_points:
             return []
 
-        # Sort points in circular order around center
+        # Sort points in circular order around center (do this once, not per-triangle)
         if len(intersection_points) > 1:
             center_x = sum(p.x for p in intersection_points) / len(intersection_points)
             center_y = sum(p.y for p in intersection_points) / len(intersection_points)
@@ -241,6 +244,7 @@ class GeometryAnalyzer:
             return []
 
         intersections = []
+        seen_points = set()  # Use set for O(1) duplicate detection instead of O(n) list search
 
         # Find edge intersections
         for v1 in vertices:
@@ -257,13 +261,10 @@ class GeometryAnalyzer:
                                 v1.y + t * (v2.y - v1.y),
                                 z
                             )
-                            # Avoid duplicates
-                            is_duplicate = any(
-                                abs(intersection.x - p.x) < 0.0001 and
-                                abs(intersection.y - p.y) < 0.0001
-                                for p in intersections
-                            )
-                            if not is_duplicate:
+                            # Avoid duplicates using set lookup (O(1) instead of O(n))
+                            point_key = (round(intersection.x, 4), round(intersection.y, 4))
+                            if point_key not in seen_points:
+                                seen_points.add(point_key)
                                 intersections.append(intersection)
 
         return intersections[:2]  # Return at most 2 points per triangle per plane

@@ -135,9 +135,10 @@ class GCodeGenerator:
             first_target = Vector3(first_pos.x + offset.x, first_pos.y + offset.y, first_pos.z + offset.z)
             self._add_move(first_target, extrusion_amount=0.0, is_travel=True)
 
-            # Iterate spiral segments
+            # Batch-generate spiral GCode for better performance
+            # Build all lines in memory first, then extend list once (faster than appending individually)
+            batch_lines = []
             for idx in range(len(spiral_points) - 1):
-                p_curr = spiral_points[idx].position
                 p_next = spiral_points[idx + 1].position
                 target = Vector3(p_next.x + offset.x, p_next.y + offset.y, p_next.z + offset.z)
                 seg_dx = target.x - self.current_position.x
@@ -145,8 +146,11 @@ class GCodeGenerator:
                 seg_dz = target.z - self.current_position.z
                 seg_len = math.sqrt(seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz)
                 extrusion = self._calculate_extrusion(seg_len)
-                # Continuous spiral: always extrude (no retractions)
-                self._add_move(target, extrusion_amount=extrusion)
+                self.current_position = target
+                self.current_extrusion += extrusion
+                speed = self._limit_speed_to_volumetric(self.print_speed, extrusion / seg_len if seg_len > 0 else 0)
+                batch_lines.append(f"G1 X{target.x:.3f} Y{target.y:.3f} Z{target.z:.3f} E{self.current_extrusion:.5f} F{speed * 60:.0f}")
+            self.gcode_lines.extend(batch_lines)
 
         else:
             # Calculate total path length for extrusion
@@ -455,7 +459,7 @@ class GCodeGenerator:
 
     def _process_layer(self, layer_idx: int, wave_points: List[WavePoint], offset: Vector3 = None) -> None:
         """
-        Process single layer of wave points.
+        Process single layer of wave points with batch GCode generation for speed.
 
         Args:
             layer_idx: Layer index
@@ -471,12 +475,11 @@ class GCodeGenerator:
         # Get Z height from first point
         z = wave_points[0].modified.z
 
-        # Add layer comment
+        # Add layer comment (pre-calculate statistics to avoid repeated iterations)
         num_waves = len(wave_points)
-        diameter = math.sqrt(
-            (max(p.modified.x for p in wave_points) - min(p.modified.x for p in wave_points)) ** 2 +
-            (max(p.modified.y for p in wave_points) - min(p.modified.y for p in wave_points)) ** 2
-        )
+        xs = [p.modified.x for p in wave_points]
+        ys = [p.modified.y for p in wave_points]
+        diameter = math.sqrt((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2)
 
         self.gcode_lines.append(
             f"; Layer {layer_idx}, Z={z:.3f}mm, Diameter={diameter:.1f}mm, "
@@ -484,7 +487,8 @@ class GCodeGenerator:
             f"Amplitude factor={wave_points[0].amplitude_factor:.2f}"
         )
 
-        # Process each point
+        # Batch-generate all GCode lines for this layer (faster than individual _add_move calls)
+        batch_lines = []
         for point_idx, wave_point in enumerate(wave_points):
             # Apply offset to position
             target_position = Vector3(
@@ -500,10 +504,18 @@ class GCodeGenerator:
             if segment_length > 0.001:
                 # Calculate extrusion
                 extrusion = self._calculate_extrusion(segment_length)
-
-                # Move with extrusion
-                self._add_move(target_position, extrusion_amount=extrusion)
-
+                self.current_extrusion += extrusion
+                
+                # Build GCode line directly
+                speed = self.print_speed
+                actual_speed = self._limit_speed_to_volumetric(speed, extrusion)
+                speed = min(speed, actual_speed)
+                
+                batch_lines.append(f"G1 X{target_position.x:.3f} Y{target_position.y:.3f} Z{target_position.z:.3f} E{self.current_extrusion:.5f} F{speed * 60:.0f}")
+                self.current_position = target_position
+        
+        # Extend list once instead of appending many times
+        self.gcode_lines.extend(batch_lines)
         self.gcode_lines.append("")
 
     def _add_move(
