@@ -284,9 +284,12 @@ class GCodeGenerator:
 
     def _add_skirt(self, spiral_points: list, offset: Vector3) -> None:
         """
-        Generate skirt loop around the first revolution of the print.
-        Skirt follows the wavy mesh pattern of the first layer.
-        Printed at Z=layer_height before the main spiral starts.
+        Generate skirt loop - a single circular base loop for bed adhesion.
+        Skirt is printed FIRST at Z=layer_height as a complete circle.
+        Then spiral starts and rises from the center.
+        
+        Skirt radius = spiral perimeter radius + nozzle_diameter/2 + skirt_distance
+        This ensures the skirt and spiral touch side-by-side (parallel circles).
         
         Args:
             spiral_points: All spiral points
@@ -295,52 +298,55 @@ class GCodeGenerator:
         if not self.skirt_enabled:
             return
         
-        self.gcode_lines.append("; --- SKIRT FOR ADHESION ---")
-        self.gcode_lines.append(f"; One loop at {self.skirt_distance}mm distance, {self.skirt_height} layer(s) tall")
+        self.gcode_lines.append("; --- SKIRT FOR ADHESION (BASE LOOP) ---")
+        self.gcode_lines.append(f"; Single circular loop parallel to spiral start, {self.skirt_height} layer(s) tall")
         
-        # Find first revolution (revolution = 0)
+        # Find first revolution to determine the spiral perimeter
         first_rev_points = [p for p in spiral_points if p.revolution < 1.0]
         
         if not first_rev_points:
             logger.warning("No first revolution points found for skirt, skipping")
             return
         
-        # Sort by angle to ensure continuous path
-        first_rev_points = sorted(first_rev_points, key=lambda p: p.angle)
+        # Calculate centroid of first revolution (spiral center)
+        cx = sum(p.position.x for p in first_rev_points) / len(first_rev_points) + offset.x
+        cy = sum(p.position.y for p in first_rev_points) / len(first_rev_points) + offset.y
         
-        # Calculate centroid of first revolution
-        cx = sum(p.position.x for p in first_rev_points) / len(first_rev_points)
-        cy = sum(p.position.y for p in first_rev_points) / len(first_rev_points)
+        # Find average radius of spiral perimeter
+        spiral_radius = sum(
+            math.sqrt((p.position.x + offset.x - cx)**2 + (p.position.y + offset.y - cy)**2)
+            for p in first_rev_points
+        ) / len(first_rev_points)
         
-        # Generate skirt points by offsetting first revolution points outward
+        # Skirt radius = spiral radius + nozzle_width/2 + skirt_distance
+        # nozzle_width = nozzle_diameter (assumes line width = nozzle diameter for 0.5mm layer)
+        nozzle_width = self.nozzle_diameter
+        skirt_radius = spiral_radius + (nozzle_width / 2.0) + self.skirt_distance
+        
+        # Generate skirt as a high-resolution circular loop
+        num_points = 360  # One point per degree for smooth circle
         skirt_points = []
-        for point in first_rev_points:
-            # Radial direction from centroid
-            dx = point.position.x - cx
-            dy = point.position.y - cy
-            dist = math.sqrt(dx*dx + dy*dy)
-            
-            if dist > 0:
-                # Offset outward by skirt_distance
-                skirt_x = point.position.x + (dx / dist) * self.skirt_distance + offset.x
-                skirt_y = point.position.y + (dy / dist) * self.skirt_distance + offset.y
-                skirt_z = self.layer_height  # Skirt at first layer height
-                skirt_points.append(Vector3(skirt_x, skirt_y, skirt_z))
         
-        # Add closing point to complete loop
+        for i in range(num_points):
+            angle = (i / num_points) * 2 * math.pi
+            skirt_x = cx + skirt_radius * math.cos(angle)
+            skirt_y = cy + skirt_radius * math.sin(angle)
+            skirt_z = self.layer_height  # Skirt at base layer height only
+            skirt_points.append(Vector3(skirt_x, skirt_y, skirt_z))
+        
+        # Close the loop
         if skirt_points:
             skirt_points.append(skirt_points[0])
         
-        # Move to skirt start (travel)
+        # Print skirt loop
         if skirt_points:
             self.gcode_lines.append("; Move to skirt start")
             self._add_move(skirt_points[0], is_travel=True)
             
-            # Unretract before skirt
             self.gcode_lines.append("; Unretract before skirt")
             self.gcode_lines.append("G11")
             
-            # Print skirt loop
+            # Print skirt loop with extrusion
             for i in range(1, len(skirt_points)):
                 prev_point = skirt_points[i-1]
                 curr_point = skirt_points[i]
@@ -352,7 +358,6 @@ class GCodeGenerator:
                 extrusion = self._calculate_extrusion(seg_len)
                 self._add_move(curr_point, extrusion_amount=extrusion)
             
-            # Retract after skirt
             self.gcode_lines.append("; Retract after skirt")
             self.gcode_lines.append("G10")
             self.gcode_lines.append("")
