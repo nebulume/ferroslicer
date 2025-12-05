@@ -185,6 +185,7 @@ class MeshVaseSlicer:
             phase_offset = merged_config["mesh_settings"].get("phase_offset", 50)
             wave_asymmetry = merged_config["mesh_settings"].get("wave_asymmetry", False)
             wave_asymmetry_intensity = merged_config["mesh_settings"].get("wave_asymmetry_intensity", 100)
+            seam_shift = merged_config["mesh_settings"].get("seam_shift", 0.0)
 
             modified_spiral = spiral_gen.apply_wave_to_spiral(
                 spiral_points,
@@ -196,7 +197,8 @@ class MeshVaseSlicer:
                 phase_offset=phase_offset,
                 wave_asymmetry=wave_asymmetry,
                 wave_asymmetry_intensity=wave_asymmetry_intensity,
-                base_integrity_manager=base_mgr
+                base_integrity_manager=base_mgr,
+                seam_shift=seam_shift
             )
 
             gcode_content = gcode_gen.generate_gcode(

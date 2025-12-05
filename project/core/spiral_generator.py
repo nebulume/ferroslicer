@@ -471,6 +471,7 @@ class SpiralGenerator:
         wave_asymmetry: bool = False,
         wave_asymmetry_intensity: float = 100,
         base_integrity_manager = None,
+        seam_shift: float = 0.0,
     ) -> List[SpiralPoint]:
         """
         Apply wave pattern to spiral path with optional layer alternation.
@@ -487,6 +488,7 @@ class SpiralGenerator:
             phase_offset: Phase offset percentage (0-100) applied every layer_alternation
             wave_asymmetry: Enable asymmetric waves (shallow rise, steep fall)
             wave_asymmetry_intensity: 0-100, blend between symmetric (0) and asymmetric (100)
+            seam_shift: Extend alternation cycle by this many waves (shifts seam location)
 
         Returns:
             Modified spiral points with waves applied
@@ -511,7 +513,7 @@ class SpiralGenerator:
         # waves_per_rev is number of waves per full 360° revolution
         logger.info(
             f"Applying wave pattern: waves_per_rev={waves_per_rev:.4f}, amplitude={wave_amplitude}mm, "
-            f"layer_alternation={layer_alternation}, phase_offset={phase_offset}%"
+            f"layer_alternation={layer_alternation}, phase_offset={phase_offset}%, seam_shift={seam_shift}"
         )
 
         # Ensure spiral sampling is dense enough to represent the requested wave frequency
@@ -588,8 +590,15 @@ class SpiralGenerator:
             # Apply layer alternation and phase offset for diamond mesh pattern
             # Every N revolutions, apply the phase offset
             if layer_alternation > 0 and phase_offset > 0:
+                # Calculate cycle length in revolutions
+                # Standard: layer_alternation
+                # With shift: layer_alternation + (seam_shift / waves_per_rev)
+                cycle_len_revs = float(layer_alternation)
+                if seam_shift != 0 and waves_per_rev > 0:
+                    cycle_len_revs += (seam_shift / waves_per_rev)
+
                 # Determine which alternation cycle we're in (0, 1, 2, ...)
-                cycle = int(spiral_point.revolution / layer_alternation)
+                cycle = int(spiral_point.revolution / cycle_len_revs)
                 # On odd cycles, apply the phase shift
                 phase_shift_degrees = (cycle % 2) * (phase_offset / 100.0) * 360.0
                 phase = (base_phase + phase_shift_degrees) % 360.0

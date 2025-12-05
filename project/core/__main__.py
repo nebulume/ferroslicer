@@ -257,6 +257,12 @@ Examples:
         )
 
         parser.add_argument(
+            "--seam-shift",
+            type=float,
+            help="Extend alternation cycle by this many waves to shift seam (e.g. 0.5)"
+        )
+
+        parser.add_argument(
             "--base-height",
             type=float,
             help="Base integrity height (mm)"
@@ -366,6 +372,7 @@ Examples:
         wave_smoothness = self._prompt_int("Wave smoothness (1-10)", 10, 1, 10)
         layer_alt = self._prompt_int("Layer alternation (revolutions)", 2, 1, 10)
         phase_offset = self._prompt_float("Phase offset (%)", 50, 0, 100)
+        seam_shift = self._prompt_float("Seam shift (waves per alternation)", 0.5)
 
         # Spiral-specific settings
         if vase_mode:
@@ -403,6 +410,7 @@ Examples:
             "wave_pattern": pattern,
             "layer_alternation": layer_alt,
             "phase_offset": phase_offset,
+            "seam_shift": seam_shift,
             "base_height": base_height,
             "base_mode": base_mode,
             "base_transition": base_transition
@@ -519,6 +527,9 @@ Examples:
 
         if hasattr(args, 'phase_offset') and args.phase_offset:
             config_overrides.setdefault('mesh_settings', {})['phase_offset'] = args.phase_offset
+
+        if hasattr(args, 'seam_shift') and args.seam_shift is not None:
+            config_overrides.setdefault('mesh_settings', {})['seam_shift'] = args.seam_shift
 
         if hasattr(args, 'base_height') and args.base_height:
             config_overrides.setdefault('mesh_settings', {})['base_height'] = args.base_height
