@@ -1,6 +1,6 @@
 {
     "project_name": "MeshVase Slicer",
-    "version": "1.0.0",
+    "version": "0.3.0",
     "debug": false,
     "output_dir": "output",
     "printer": {
@@ -39,6 +39,7 @@
         "wave_asymmetry_intensity": 100,
         "layer_alternation": 2,
         "phase_offset": 50,
+        "seam_shift": 0.0,
         "start_phase": "random",
         "base_height": 28.0,
         "base_mode": "fewer_gaps",

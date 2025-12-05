@@ -329,70 +329,76 @@ Examples:
 
         # Printer settings
         print("\n[Printer Settings]")
-        nozzle = self._prompt_float("Nozzle diameter (mm)", 1.0)
-        nozzle_temp = self._prompt_float("Nozzle temperature (°C)", 260)
-        bed_temp = self._prompt_float("Bed temperature (°C)", 65)
+        nozzle = self._prompt_float("Nozzle diameter (mm)", self.config.get("printer.nozzle_diameter", 1.0))
+        nozzle_temp = self._prompt_float("Nozzle temperature (°C)", self.config.get("printer.nozzle_temp", 260))
+        bed_temp = self._prompt_float("Bed temperature (°C)", self.config.get("printer.bed_temp", 65))
 
         # Print settings
         print("\n[Print Settings]")
-        layer_height = self._prompt_float("Layer height (mm)", 0.5)
-        print_speed = self._prompt_float("Print speed (mm/s)", 35)
-        travel_speed = self._prompt_float("Travel speed (mm/s)", 40)
-        fan_speed = self._prompt_float("Fan speed (%)", 100, 0, 100)
-        max_volumetric_speed = self._prompt_float("Max volumetric speed (mm³/s)", 12.0, 0.1)
+        layer_height = self._prompt_float("Layer height (mm)", self.config.get("print_settings.layer_height", 0.5))
+        print_speed = self._prompt_float("Print speed (mm/s)", self.config.get("print_settings.print_speed", 35))
+        travel_speed = self._prompt_float("Travel speed (mm/s)", self.config.get("print_settings.travel_speed", 40))
+        fan_speed = self._prompt_float("Fan speed (%)", self.config.get("print_settings.fan_speed", 100), 0, 100)
+        max_volumetric_speed = self._prompt_float("Max volumetric speed (mm³/s)", self.config.get("print_settings.max_volumetric_speed", 12.0), 0.1)
 
         # Vase mode selection
         print("\n[Printing Mode]")
+        default_vase_mode = "spiral_vase" if self.config.get("print_settings.vase_mode", False) else "layer_mesh"
         vase_mode = self._prompt_choice(
             "Printing mode",
             ["spiral_vase", "layer_mesh"],
-            "spiral_vase"
+            default_vase_mode
         )
         vase_mode = vase_mode == "spiral_vase"
 
         # Mesh settings
         print("\n[Wave Pattern Settings]")
-        wave_amplitude = self._prompt_float("Wave amplitude (mm)", 2.0)
+        wave_amplitude = self._prompt_float("Wave amplitude (mm)", self.config.get("mesh_settings.wave_amplitude", 2.0))
         
         # Ask about wave frequency mode
+        default_wave_count = self.config.get("mesh_settings.wave_count")
+        default_wave_mode = "per_revolution" if default_wave_count is not None else "per_distance"
+        
         wave_mode = self._prompt_choice(
             "Wave frequency specification",
             ["per_revolution", "per_distance"],
-            "per_revolution"
+            default_wave_mode
         )
 
         if wave_mode == "per_revolution":
-            wave_count = self._prompt_int("Number of waves per revolution", 120, 1, 1000)
+            default_count = default_wave_count if default_wave_count is not None else 120
+            wave_count = self._prompt_int("Number of waves per revolution", default_count, 1, 1000)
             wave_spacing = None
         else:
-            wave_spacing = self._prompt_float("Wave spacing / distance (mm)", 4.0)
+            default_spacing = self.config.get("mesh_settings.wave_spacing", 4.0)
+            wave_spacing = self._prompt_float("Wave spacing / distance (mm)", default_spacing)
             wave_count = None
 
-        pattern = self._prompt_choice("Wave pattern", ["sine", "triangular", "sawtooth"], "sine")
-        wave_smoothness = self._prompt_int("Wave smoothness (1-10)", 10, 1, 10)
-        layer_alt = self._prompt_int("Layer alternation (revolutions)", 2, 1, 10)
-        phase_offset = self._prompt_float("Phase offset (%)", 50, 0, 100)
-        seam_shift = self._prompt_float("Seam shift (waves per alternation)", 0.5)
+        pattern = self._prompt_choice("Wave pattern", ["sine", "triangular", "sawtooth"], self.config.get("mesh_settings.wave_pattern", "sine"))
+        wave_smoothness = self._prompt_int("Wave smoothness (1-10)", self.config.get("mesh_settings.wave_smoothness", 10), 1, 10)
+        layer_alt = self._prompt_int("Layer alternation (revolutions)", self.config.get("mesh_settings.layer_alternation", 2), 1, 10)
+        phase_offset = self._prompt_float("Phase offset (%)", self.config.get("mesh_settings.phase_offset", 50), 0, 100)
+        seam_shift = self._prompt_float("Seam shift (waves per alternation)", self.config.get("mesh_settings.seam_shift", 0.0))
 
         # Spiral-specific settings
         if vase_mode:
             print("\n[Spiral Vase Settings]")
-            spiral_points_per_degree = self._prompt_float("Spiral sampling resolution (points/degree)", 1.2, 0.1)
+            spiral_points_per_degree = self._prompt_float("Spiral sampling resolution (points/degree)", self.config.get("print_settings.spiral_points_per_degree", 1.2), 0.1)
         else:
             spiral_points_per_degree = None
 
         # Base settings
         print("\n[Base Integrity Settings]")
-        base_height = self._prompt_float("Base height (mm)", 28.0)
+        base_height = self._prompt_float("Base height (mm)", self.config.get("mesh_settings.base_height", 28.0))
         base_mode = self._prompt_choice(
             "Base mode",
             ["tighter_waves", "fewer_gaps", "solid_then_mesh"],
-            "fewer_gaps"
+            self.config.get("mesh_settings.base_mode", "fewer_gaps")
         )
         base_transition = self._prompt_choice(
             "Base transition",
             ["linear", "exponential", "step"],
-            "exponential"
+            self.config.get("mesh_settings.base_transition", "exponential")
         )
 
         result = {

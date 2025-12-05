@@ -43,7 +43,7 @@ class Config:
         """
         return {
             "project_name": "MeshVase Slicer",
-            "version": "1.0.0",
+            "version": "0.3.0",
             "debug": False,
             "output_dir": "output",
             "printer": {
@@ -69,6 +69,7 @@ class Config:
                 "wave_pattern": "sine",  # Options: sine, triangular, sawtooth
                 "layer_alternation": 2,
                 "phase_offset": 50,
+                "seam_shift": 0.0,
                 "start_phase": "random",  # Options: random, aligned
                 "base_height": 28.0,
                 "base_mode": "fewer_gaps",  # Options: tighter_waves, fewer_gaps, solid_then_mesh
