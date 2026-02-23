@@ -3,12 +3,17 @@ Settings panel — all slicer parameters as Qt widgets.
 Mirrors every CLI flag from __main__.py.
 """
 
+import json
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QSlider, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+
+SLICER_SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "slicer_settings.json"
 
 
 class SettingsPanel(QScrollArea):
@@ -35,6 +40,12 @@ class SettingsPanel(QScrollArea):
         self._widgets = {}   # key → widget
         self._building = True
 
+        # Debounce timer — batches rapid changes into one disk write
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(500)
+        self._save_timer.timeout.connect(self._save_to_disk)
+
         self._add_printer_group(layout)
         self._add_build_volume_group(layout)
         self._add_motion_group(layout)
@@ -46,6 +57,9 @@ class SettingsPanel(QScrollArea):
 
         layout.addStretch()
         self._building = False
+
+        # Restore last session's values (silently ignore if file missing/corrupt)
+        self._load_from_disk()
 
     # ── Group builders ───────────────────────────────────────────────────────
 
@@ -215,6 +229,27 @@ class SettingsPanel(QScrollArea):
     def _emit(self, *_):
         if not self._building:
             self.settings_changed.emit()
+            self._save_timer.start()   # (re)start 500 ms debounce
+
+    # ── Persistence ──────────────────────────────────────────────────────────
+
+    def _save_to_disk(self):
+        try:
+            SLICER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SLICER_SETTINGS_PATH.write_text(
+                json.dumps(self.get_config_overrides(), indent=2)
+            )
+        except Exception:
+            pass   # non-fatal — settings just won't persist this session
+
+    def _load_from_disk(self):
+        if not SLICER_SETTINGS_PATH.exists():
+            return
+        try:
+            saved = json.loads(SLICER_SETTINGS_PATH.read_text())
+            self.load_config(saved)
+        except Exception:
+            pass   # corrupt file — ignore and keep defaults
 
     def _on_mode_change(self, idx):
         """Show/hide spiral-specific settings based on mode selection."""
