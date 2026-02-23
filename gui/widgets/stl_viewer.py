@@ -97,9 +97,31 @@ void main() { gl_Position = uMVP * vec4(aPos, 1.0); }
 
 _BOX_FRAG = """
 #version 330 core
+uniform vec4 uColor;
 out vec4 fragColor;
-void main() { fragColor = vec4(0.40, 0.55, 0.80, 0.30); }
+void main() { fragColor = uColor; }
 """
+
+
+def _grid_verts(x0: float, y: float, z0: float,
+                x1: float, z1: float, step: float) -> np.ndarray:
+    """Return (N, 3) float32 — grid line vertices for GL_LINES at constant viewer-Y.
+
+    Lines run parallel to X (varying Z) and parallel to Z (varying X),
+    covering [x0, x1] × [z0, z1] with the given step spacing.
+    """
+    n_x = max(2, round((x1 - x0) / step) + 1)
+    n_z = max(2, round((z1 - z0) / step) + 1)
+    xs = np.linspace(x0, x1, n_x, dtype=np.float32)
+    zs = np.linspace(z0, z1, n_z, dtype=np.float32)
+    verts = []
+    for z in zs:                     # horizontal lines (parallel to X)
+        verts.append([x0, y, z])
+        verts.append([x1, y, z])
+    for x in xs:                     # vertical lines (parallel to Z)
+        verts.append([x, y, z0])
+        verts.append([x, y, z1])
+    return np.array(verts, dtype=np.float32)
 
 
 def _box_edge_verts(x0: float, y0: float, z0: float,
@@ -212,9 +234,20 @@ class _STLViewerGL(QOpenGLWidget):
         self._box_prog:    Optional[QOpenGLShaderProgram]     = None
         self._box_vao:     Optional[QOpenGLVertexArrayObject] = None
         self._box_vbo:     Optional[QOpenGLBuffer]            = None
-        self._box_mvp_loc: int                                = -1
+        self._box_mvp_loc:   int                              = -1
+        self._box_color_loc: int                              = -1
         self._pending_box: Optional[np.ndarray]               = None
         self._box_n_verts: int                                = 0
+
+        # ── Bed grid (cm squares + mm squares) ───────────────────────────────
+        self._grid_cm_vao:     Optional[QOpenGLVertexArrayObject] = None
+        self._grid_cm_vbo:     Optional[QOpenGLBuffer]            = None
+        self._pending_grid_cm: Optional[np.ndarray]               = None
+        self._grid_cm_n_verts: int                                = 0
+        self._grid_mm_vao:     Optional[QOpenGLVertexArrayObject] = None
+        self._grid_mm_vbo:     Optional[QOpenGLBuffer]            = None
+        self._pending_grid_mm: Optional[np.ndarray]               = None
+        self._grid_mm_n_verts: int                                = 0
 
         # ── Interaction ───────────────────────────────────────────────────────
         self._last_mouse = None
@@ -278,6 +311,14 @@ class _STLViewerGL(QOpenGLWidget):
         y_top = y_bed - max_z / s             # viewer-Y of ceiling (negative = higher)
 
         self._pending_box = _box_edge_verts(-hx, y_top, -hz, hx, y_bed, hz)
+        self._queue_grid(hx, y_bed, hz, s)
+
+    def _queue_grid(self, hx: float, y_bed: float, hz: float, s: float) -> None:
+        """Compute and queue cm (10 mm) and mm (1 mm) grid vertices for the bed surface."""
+        step_cm = 10.0 / s   # 10 mm in normalized units
+        step_mm =  1.0 / s   #  1 mm in normalized units
+        self._pending_grid_cm = _grid_verts(-hx, y_bed, -hz, hx, hz, step_cm)
+        self._pending_grid_mm = _grid_verts(-hx, y_bed, -hz, hx, hz, step_mm)
 
     def reset_view(self) -> None:
         self.rot_x = 25.0
@@ -391,7 +432,8 @@ class _STLViewerGL(QOpenGLWidget):
         self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _BOX_VERT)
         self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _BOX_FRAG)
         self._box_prog.link()
-        self._box_mvp_loc = self._box_prog.uniformLocation("uMVP")
+        self._box_mvp_loc   = self._box_prog.uniformLocation("uMVP")
+        self._box_color_loc = self._box_prog.uniformLocation("uColor")
 
         self._box_vao = QOpenGLVertexArrayObject(self)
         self._box_vao.create(); self._box_vao.bind()
@@ -401,6 +443,27 @@ class _STLViewerGL(QOpenGLWidget):
         gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
         gl.glEnableVertexAttribArray(0)
         self._box_vao.release(); self._box_vbo.release()
+
+        # ── cm grid VAO (reuses _box_prog — same vertex layout) ───────────────
+        self._grid_cm_vao = QOpenGLVertexArrayObject(self)
+        self._grid_cm_vao.create(); self._grid_cm_vao.bind()
+        self._grid_cm_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._grid_cm_vbo.create(); self._grid_cm_vbo.bind()
+        self._grid_cm_vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        self._grid_cm_vao.release(); self._grid_cm_vbo.release()
+
+        # ── mm grid VAO ────────────────────────────────────────────────────────
+        self._grid_mm_vao = QOpenGLVertexArrayObject(self)
+        self._grid_mm_vao.create(); self._grid_mm_vao.bind()
+        self._grid_mm_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._grid_mm_vbo.create(); self._grid_mm_vbo.bind()
+        self._grid_mm_vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        self._grid_mm_vao.release(); self._grid_mm_vbo.release()
+
         # Re-queue if dims were set before GL was ready
         self._queue_box()
 
@@ -425,6 +488,22 @@ class _STLViewerGL(QOpenGLWidget):
             self._box_n_verts = len(self._pending_box)
             self._pending_box = None
 
+        # Upload pending grid data
+        if self._pending_grid_cm is not None and self._gl_ready:
+            data = self._pending_grid_cm
+            self._grid_cm_vbo.bind()
+            self._grid_cm_vbo.allocate(data.tobytes(), data.nbytes)
+            self._grid_cm_vbo.release()
+            self._grid_cm_n_verts = len(data)
+            self._pending_grid_cm = None
+        if self._pending_grid_mm is not None and self._gl_ready:
+            data = self._pending_grid_mm
+            self._grid_mm_vbo.bind()
+            self._grid_mm_vbo.allocate(data.tobytes(), data.nbytes)
+            self._grid_mm_vbo.release()
+            self._grid_mm_n_verts = len(data)
+            self._pending_grid_mm = None
+
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
         if not self._gl_ready:
@@ -445,40 +524,78 @@ class _STLViewerGL(QOpenGLWidget):
 
         # ── Model triangles ────────────────────────────────────────────────
         if self._n_tris > 0:
+            self._prog.bind()
+            gl.glUniform1f(self._alpha_loc, 1.0)
+            gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, model_mvp.flatten())
+            self._vao.bind()
+
             if self._transparent:
-                # Show both faces — useful for inspecting hollow geometry
+                # Transparent: single pass, both faces, alpha blended.
                 gl.glDisable(gl.GL_CULL_FACE)
                 gl.glEnable(gl.GL_BLEND)
                 gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
                 gl.glDepthMask(gl.GL_FALSE)
-                alpha = 0.35
+                gl.glUniform1f(self._alpha_loc, 0.35)
+                gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
+                gl.glDepthMask(gl.GL_TRUE)
+                gl.glDisable(gl.GL_BLEND)
             else:
-                # Don't cull — the fragment shader darkens back-facing fragments
-                # instead (lit *= 0.25).  This means bad-winding faces look dark
-                # rather than punching holes in the model.
-                gl.glDisable(gl.GL_CULL_FACE)
+                # Solid: two-pass render.
+                #
+                # Pass 1 — back-facing triangles (interior surfaces, wrong-winding faces).
+                #   The fragment shader darkens them (gl_FrontFacing=false → lit*=0.25).
+                #   Their depths are written so pass 2 can overwrite correctly.
+                #
+                # Pass 2 — front-facing triangles (exterior surfaces).
+                #   These are geometrically closer to the camera than the interior,
+                #   so they pass the depth test and overwrite pass 1 everywhere
+                #   the exterior is visible.  Bad-winding faces (no matching front
+                #   face) remain dark from pass 1 — no holes, no z-fighting.
                 gl.glDisable(gl.GL_BLEND)
                 gl.glDepthMask(gl.GL_TRUE)
-                alpha = 1.0
-            self._prog.bind()
-            gl.glUniform1f(self._alpha_loc, alpha)
-            gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, model_mvp.flatten())
-            self._vao.bind()
-            gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
+                gl.glEnable(gl.GL_CULL_FACE)
+
+                gl.glCullFace(gl.GL_FRONT)   # draw back-facing tris (dim)
+                gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
+
+                gl.glCullFace(gl.GL_BACK)    # draw front-facing tris (bright) on top
+                gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
+
+                gl.glDisable(gl.GL_CULL_FACE)
+
             self._vao.release()
             self._prog.release()
-            if self._transparent:
-                gl.glDepthMask(gl.GL_TRUE)
 
-        # ── Print volume box (unscaled — always shows the actual bed size) ─
-        if self._box_n_verts > 0 and self._box_prog is not None:
+        # ── Bed grid + print volume box (unscaled — always shows actual bed size) ─
+        has_box  = self._box_n_verts > 0
+        has_grid = self._grid_cm_n_verts > 0 or self._grid_mm_n_verts > 0
+        if (has_box or has_grid) and self._box_prog is not None:
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
             self._box_prog.bind()
             gl.glUniformMatrix4fv(self._box_mvp_loc, 1, gl.GL_TRUE, base_mvp.flatten())
-            self._box_vao.bind()
-            gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
-            self._box_vao.release()
+
+            # mm grid (1 mm squares) — very faint; draw first so cm grid sits on top
+            if self._grid_mm_n_verts > 0:
+                gl.glUniform4f(self._box_color_loc, 0.12, 0.18, 0.32, 0.20)
+                self._grid_mm_vao.bind()
+                gl.glDrawArrays(gl.GL_LINES, 0, self._grid_mm_n_verts)
+                self._grid_mm_vao.release()
+
+            # cm grid (10 mm squares) — clearly visible
+            if self._grid_cm_n_verts > 0:
+                gl.glUniform4f(self._box_color_loc, 0.22, 0.38, 0.65, 0.55)
+                self._grid_cm_vao.bind()
+                gl.glDrawArrays(gl.GL_LINES, 0, self._grid_cm_n_verts)
+                self._grid_cm_vao.release()
+
+            # Box wireframe edges
+            if has_box:
+                gl.glUniform4f(self._box_color_loc, 0.40, 0.55, 0.80, 0.30)
+                self._box_vao.bind()
+                gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
+                self._box_vao.release()
+
             self._box_prog.release()
             gl.glDisable(gl.GL_BLEND)   # restore — must not bleed into next frame
 

@@ -81,6 +81,7 @@ _BUILTIN_PROFILE = {
     "max_z": 280,
     "origin": "front_left",
     "kinematics": "cartesian",
+    "filament_diameter": 1.75,
     "retract_dist": 0.8,
     "retract_speed": 40.0,
     "printer_ip": "192.168.1.65",
@@ -151,7 +152,7 @@ class AppSettingsDialog(QDialog):
         tabs = QTabWidget()
         layout.addWidget(tabs)
 
-        tabs.addTab(self._build_profiles_tab(), "Printer Profiles")
+        tabs.addTab(self._build_profiles_tab(), "Firmware/Hardware")
         tabs.addTab(self._build_output_tab(),   "Output")
 
         btns = QDialogButtonBox(
@@ -214,6 +215,7 @@ class AppSettingsDialog(QDialog):
 
         self._firmware_combo = QComboBox()
         self._firmware_combo.addItems(["Klipper", "Marlin", "RRF (RepRapFirmware)"])
+        self._firmware_combo.setMinimumWidth(220)
         self._firmware_combo.setToolTip(
             "Klipper: uses START_PRINT/END_PRINT macros, G10/G11 firmware retract\n"
             "Marlin: explicit M109/M190 heat, G28 home, G1 E for retract\n"
@@ -231,11 +233,19 @@ class AppSettingsDialog(QDialog):
 
         self._origin_combo = QComboBox()
         self._origin_combo.addItems(["Front-Left Corner", "Center (delta / RRF)"])
+        self._origin_combo.setMinimumWidth(220)
         hw_f.addRow("Origin (0,0):", self._origin_combo)
 
         self._kinematics_combo = QComboBox()
         self._kinematics_combo.addItems(["Cartesian", "CoreXY", "Delta"])
+        self._kinematics_combo.setMinimumWidth(220)
         hw_f.addRow("Kinematics:", self._kinematics_combo)
+
+        self._filament_diam_spin = self._make_dbl_spin(1.0, 3.5, 1.75, 0.05)
+        self._filament_diam_spin.setToolTip(
+            "Filament diameter in mm. Standard FDM: 1.75 mm. Some printers use 2.85/3 mm."
+        )
+        hw_f.addRow("Filament (mm):", self._filament_diam_spin)
 
         self._retract_dist_spin = self._make_dbl_spin(0.1, 10.0, 0.8, 0.1)
         self._retract_speed_spin = self._make_dbl_spin(1.0, 120.0, 40.0, 5.0)
@@ -353,6 +363,7 @@ class AppSettingsDialog(QDialog):
         kin_map = {"cartesian": 0, "corexy": 1, "delta": 2}
         self._kinematics_combo.setCurrentIndex(kin_map.get(p.get("kinematics", "cartesian"), 0))
 
+        self._filament_diam_spin.setValue(float(p.get("filament_diameter", 1.75)))
         self._retract_dist_spin.setValue(float(p.get("retract_dist", 0.8)))
         self._retract_speed_spin.setValue(float(p.get("retract_speed", 40.0)))
 
@@ -375,8 +386,9 @@ class AppSettingsDialog(QDialog):
             "max_z":        self._max_z_spin.value(),
             "origin":       orig_map[self._origin_combo.currentIndex()],
             "kinematics":   kin_map[self._kinematics_combo.currentIndex()],
-            "retract_dist": self._retract_dist_spin.value(),
-            "retract_speed":self._retract_speed_spin.value(),
+            "filament_diameter": self._filament_diam_spin.value(),
+            "retract_dist":      self._retract_dist_spin.value(),
+            "retract_speed":     self._retract_speed_spin.value(),
             "printer_ip":   self._ip_edit.text().strip() or "192.168.1.65",
             "printer_port": self._port_spin.value(),
             "start_gcode":  self._start_edit.toPlainText(),

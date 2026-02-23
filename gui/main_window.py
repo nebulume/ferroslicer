@@ -225,6 +225,9 @@ class MainWindow(QMainWindow):
         self.file_browser.file_hovered.connect(self._on_file_hovered)
         self.file_browser.file_opened.connect(self._load_stl)
         self.preview_tabs.addTab(self.file_browser, "  Files  ")
+        # Restore last directory so the user lands where they left off
+        last_dir = self._resolve_start_dir(self._app_settings.get("last_stl_dir", ""))
+        self.file_browser.navigate_to(last_dir)
 
         # Tab 1: Model — STL viewer
         self.stl_viewer = STLViewer()
@@ -641,11 +644,10 @@ class MainWindow(QMainWindow):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _on_settings_changed(self):
-        cfg = self.settings_panel.get_config_overrides()
-        p = cfg.get("printer", {})
-        bed_x = float(p.get("bed_x", 220))
-        bed_y = float(p.get("bed_y", 220))
-        max_z = float(p.get("max_z", 280))
+        profile = get_active_profile(self._app_settings)
+        bed_x = float(profile.get("bed_x", 220))
+        bed_y = float(profile.get("bed_y", 220))
+        max_z = float(profile.get("max_z", 280))
         self.stl_viewer.set_print_volume(bed_x, bed_y, max_z)
         self.toolpath_viewer.set_print_volume(bed_x, bed_y, max_z)
 

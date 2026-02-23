@@ -134,7 +134,7 @@ class SlicerWorker(QThread):
                 print_speed=ps["print_speed"],
                 travel_speed=ps["travel_speed"],
                 fan_speed=ps["fan_speed"],
-                filament_diameter=merged["printer"]["filament_diameter"],
+                filament_diameter=merged.get("printer_profile", {}).get("filament_diameter", 1.75),
                 purge_gap=ps.get("purge_gap", 20.0),
                 purge_length=ps.get("purge_length", 50.0),
                 purge_side=ps.get("purge_side", "left"),

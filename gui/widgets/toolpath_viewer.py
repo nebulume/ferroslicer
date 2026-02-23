@@ -81,8 +81,9 @@ void main() { gl_Position = uMVP * vec4(aPos, 1.0); }
 
 _BOX_FRAG = """
 #version 330 core
+uniform vec4 uColor;
 out vec4 fragColor;
-void main() { fragColor = vec4(0.40, 0.55, 0.80, 0.30); }
+void main() { fragColor = uColor; }
 """
 
 
@@ -360,12 +361,23 @@ class _ToolpathGL(QOpenGLWidget):
         self._bed_dims:    Optional[tuple]                    = None
         self._norm_center: Optional[np.ndarray]               = None
         self._norm_scale_v: float                             = 1.0
-        self._box_prog:    Optional[QOpenGLShaderProgram]     = None
-        self._box_vao:     Optional[QOpenGLVertexArrayObject] = None
-        self._box_vbo:     Optional[QOpenGLBuffer]            = None
-        self._box_mvp_loc: int                                = -1
-        self._pending_box: Optional[np.ndarray]               = None
-        self._box_n_verts: int                                = 0
+        self._box_prog:      Optional[QOpenGLShaderProgram]     = None
+        self._box_vao:       Optional[QOpenGLVertexArrayObject] = None
+        self._box_vbo:       Optional[QOpenGLBuffer]            = None
+        self._box_mvp_loc:   int                                = -1
+        self._box_color_loc: int                                = -1
+        self._pending_box:   Optional[np.ndarray]               = None
+        self._box_n_verts:   int                                = 0
+
+        # ── Bed grid (cm + mm squares) ────────────────────────────────────────
+        self._grid_cm_vao:     Optional[QOpenGLVertexArrayObject] = None
+        self._grid_cm_vbo:     Optional[QOpenGLBuffer]            = None
+        self._pending_grid_cm: Optional[np.ndarray]               = None
+        self._grid_cm_n_verts: int                                = 0
+        self._grid_mm_vao:     Optional[QOpenGLVertexArrayObject] = None
+        self._grid_mm_vbo:     Optional[QOpenGLBuffer]            = None
+        self._pending_grid_mm: Optional[np.ndarray]               = None
+        self._grid_mm_n_verts: int                                = 0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -437,6 +449,33 @@ class _ToolpathGL(QOpenGLWidget):
         for a, b in edges:
             verts.append(c[a]); verts.append(c[b])
         self._pending_box = np.array(verts, dtype=np.float32)
+        self._queue_grid()
+
+    def _queue_grid(self) -> None:
+        """Compute and queue cm (10 mm) and mm (1 mm) bed surface grid."""
+        if self._bed_dims is None or self._norm_center is None:
+            return
+        bed_x, bed_y, _ = self._bed_dims
+
+        def _make_lines(step: float) -> np.ndarray:
+            xs = np.arange(0, bed_x + 1e-9, step, dtype=np.float32)
+            ys = np.arange(0, bed_y + 1e-9, step, dtype=np.float32)
+            verts = []
+            for y in ys:                          # horizontal lines (parallel to X)
+                verts.append([0,     y, 0])
+                verts.append([bed_x, y, 0])
+            for x in xs:                          # vertical lines (parallel to Y)
+                verts.append([x, 0,     0])
+                verts.append([x, bed_y, 0])
+            raw = np.array(verts, dtype=np.float32)
+            # Same normalisation + axis swap as toolpath points and box corners
+            n = (raw - self._norm_center) / self._norm_scale_v
+            n = n[:, [0, 2, 1]].copy()
+            n[:, 1] *= -1.0
+            return n
+
+        self._pending_grid_cm = _make_lines(10.0)
+        self._pending_grid_mm = _make_lines(1.0)
 
     # ── Background thread slots ───────────────────────────────────────────────
 
@@ -547,7 +586,8 @@ class _ToolpathGL(QOpenGLWidget):
         self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _BOX_VERT)
         self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _BOX_FRAG)
         self._box_prog.link()
-        self._box_mvp_loc = self._box_prog.uniformLocation("uMVP")
+        self._box_mvp_loc   = self._box_prog.uniformLocation("uMVP")
+        self._box_color_loc = self._box_prog.uniformLocation("uColor")
 
         self._box_vao = QOpenGLVertexArrayObject(self)
         self._box_vao.create(); self._box_vao.bind()
@@ -557,6 +597,26 @@ class _ToolpathGL(QOpenGLWidget):
         gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
         gl.glEnableVertexAttribArray(0)
         self._box_vao.release(); self._box_vbo.release()
+
+        # ── cm grid VAO ───────────────────────────────────────────────────────
+        self._grid_cm_vao = QOpenGLVertexArrayObject(self)
+        self._grid_cm_vao.create(); self._grid_cm_vao.bind()
+        self._grid_cm_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._grid_cm_vbo.create(); self._grid_cm_vbo.bind()
+        self._grid_cm_vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        self._grid_cm_vao.release(); self._grid_cm_vbo.release()
+
+        # ── mm grid VAO ───────────────────────────────────────────────────────
+        self._grid_mm_vao = QOpenGLVertexArrayObject(self)
+        self._grid_mm_vao.create(); self._grid_mm_vao.bind()
+        self._grid_mm_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._grid_mm_vbo.create(); self._grid_mm_vbo.bind()
+        self._grid_mm_vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        self._grid_mm_vao.release(); self._grid_mm_vbo.release()
 
         self._gl_ready = True
 
@@ -614,21 +674,59 @@ class _ToolpathGL(QOpenGLWidget):
 
             self._prog.release()
 
-        # ── Print volume box ──────────────────────────────────────────────────
+        # ── Bed grid + print volume box ───────────────────────────────────────
         if self._pending_box is not None:
             self._box_vbo.bind()
             self._box_vbo.allocate(self._pending_box.tobytes(), self._pending_box.nbytes)
             self._box_vbo.release()
             self._box_n_verts = len(self._pending_box)
             self._pending_box = None
+        if self._pending_grid_cm is not None:
+            data = self._pending_grid_cm
+            self._grid_cm_vbo.bind()
+            self._grid_cm_vbo.allocate(data.tobytes(), data.nbytes)
+            self._grid_cm_vbo.release()
+            self._grid_cm_n_verts = len(data)
+            self._pending_grid_cm = None
+        if self._pending_grid_mm is not None:
+            data = self._pending_grid_mm
+            self._grid_mm_vbo.bind()
+            self._grid_mm_vbo.allocate(data.tobytes(), data.nbytes)
+            self._grid_mm_vbo.release()
+            self._grid_mm_n_verts = len(data)
+            self._pending_grid_mm = None
 
-        if self._box_n_verts > 0 and self._box_prog is not None:
+        has_box  = self._box_n_verts > 0
+        has_grid = self._grid_cm_n_verts > 0 or self._grid_mm_n_verts > 0
+        if (has_box or has_grid) and self._box_prog is not None:
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
             self._box_prog.bind()
             gl.glUniformMatrix4fv(self._box_mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
-            self._box_vao.bind()
-            gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
-            self._box_vao.release()
+
+            # mm grid — very faint
+            if self._grid_mm_n_verts > 0:
+                gl.glUniform4f(self._box_color_loc, 0.12, 0.18, 0.32, 0.20)
+                self._grid_mm_vao.bind()
+                gl.glDrawArrays(gl.GL_LINES, 0, self._grid_mm_n_verts)
+                self._grid_mm_vao.release()
+
+            # cm grid — clearly visible
+            if self._grid_cm_n_verts > 0:
+                gl.glUniform4f(self._box_color_loc, 0.22, 0.38, 0.65, 0.55)
+                self._grid_cm_vao.bind()
+                gl.glDrawArrays(gl.GL_LINES, 0, self._grid_cm_n_verts)
+                self._grid_cm_vao.release()
+
+            # Box wireframe
+            if has_box:
+                gl.glUniform4f(self._box_color_loc, 0.40, 0.55, 0.80, 0.30)
+                self._box_vao.bind()
+                gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
+                self._box_vao.release()
+
             self._box_prog.release()
+            gl.glDisable(gl.GL_BLEND)
 
     def paintEvent(self, event):
         super().paintEvent(event)

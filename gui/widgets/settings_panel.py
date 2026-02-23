@@ -49,7 +49,6 @@ class SettingsPanel(QScrollArea):
 
         self._add_presets_bar(layout)
         self._add_printer_group(layout)
-        self._add_build_volume_group(layout)
         self._add_motion_group(layout)
         self._add_print_group(layout)
         self._add_mode_group(layout)
@@ -182,41 +181,12 @@ class SettingsPanel(QScrollArea):
     def _add_printer_group(self, parent):
         g = QGroupBox("Printer")
         f = QFormLayout(g)
-        self._dbl(f, "nozzle_diameter",   "Nozzle (mm):",      1.0,  0.1,  2.0,  0.1,
+        self._dbl(f, "nozzle_diameter", "Nozzle (mm):",      1.0,  0.1,  2.0,  0.1,
                   tip="Diameter of the nozzle tip. Common sizes: 0.4, 0.6, 1.0mm")
-        self._dbl(f, "filament_diameter", "Filament (mm):",     1.75, 1.0,  3.0,  0.05,
-                  tip="Diameter of the filament spool. Standard FDM is 1.75mm")
-        self._int(f, "nozzle_temp",       "Nozzle temp (°C):", 260,  150,  400,
+        self._int(f, "nozzle_temp",     "Nozzle temp (°C):", 260,  150,  400,
                   tip="Hotend temperature. Typical range: 200–260°C for PLA/PETG")
-        self._int(f, "bed_temp",          "Bed temp (°C):",      65,    0,  130,
+        self._int(f, "bed_temp",        "Bed temp (°C):",      65,    0,  130,
                   tip="Heated bed temperature. 0 = bed off. Typical: 60–70°C for PLA")
-
-        kin = QComboBox()
-        kin.addItems(["Cartesian", "CoreXY", "Delta"])
-        kin.setToolTip("Printer motion system type — determines optimal GCode commands")
-        kin.currentIndexChanged.connect(self._emit)
-        self._widgets["kinematics"] = kin
-        f.addRow("Kinematics:", kin)
-
-        parent.addWidget(g)
-
-    def _add_build_volume_group(self, parent):
-        g = QGroupBox("Build Volume")
-        f = QFormLayout(g)
-        self._int(f, "bed_x",  "Bed X (mm):", 220, 50, 2000, tip="Build plate width in mm")
-        self._int(f, "bed_y",  "Bed Y (mm):", 220, 50, 2000, tip="Build plate depth in mm")
-        self._int(f, "max_z",  "Max Z (mm):", 280, 50, 2000, tip="Maximum printable height in mm")
-
-        orig = QComboBox()
-        orig.addItems([
-            "Front-Left Corner",
-            "Center (delta / RRF)",
-        ])
-        orig.setToolTip("Where (0,0) is on your printer.\nFront-left for most Cartesian/CoreXY; Center for Delta printers")
-        orig.currentIndexChanged.connect(self._emit)
-        self._widgets["origin"] = orig
-        f.addRow("Origin (0,0):", orig)
-
         parent.addWidget(g)
 
     def _add_motion_group(self, parent):
@@ -499,20 +469,11 @@ class SettingsPanel(QScrollArea):
         if is_vase:
             print_s["spiral_points_per_degree"] = w["spiral_points_per_degree"].value()
 
-        _ORIGIN_MAP = ["front_left", "center"]
-        _KIN_MAP    = ["cartesian", "corexy", "delta"]
-
         return {
             "printer": {
-                "nozzle_diameter":  w["nozzle_diameter"].value(),
-                "filament_diameter":w["filament_diameter"].value(),
-                "nozzle_temp":      w["nozzle_temp"].value(),
-                "bed_temp":         w["bed_temp"].value(),
-                "kinematics":       _KIN_MAP[w["kinematics"].currentIndex()],
-                "bed_x":            float(w["bed_x"].value()),
-                "bed_y":            float(w["bed_y"].value()),
-                "max_z":            float(w["max_z"].value()),
-                "origin":           _ORIGIN_MAP[w["origin"].currentIndex()],
+                "nozzle_diameter": w["nozzle_diameter"].value(),
+                "nozzle_temp":     w["nozzle_temp"].value(),
+                "bed_temp":        w["bed_temp"].value(),
             },
             "print_settings": print_s,
             "mesh_settings":  mesh,
@@ -541,23 +502,9 @@ class SettingsPanel(QScrollArea):
                     if idx >= 0:
                         w[key].setCurrentIndex(idx)
 
-            _set_dbl("nozzle_diameter",          printer.get("nozzle_diameter"))
-            _set_dbl("filament_diameter",        printer.get("filament_diameter"))
-            _set_int("nozzle_temp",              printer.get("nozzle_temp"))
-            _set_int("bed_temp",                 printer.get("bed_temp"))
-            _set_int("bed_x",                    printer.get("bed_x"))
-            _set_int("bed_y",                    printer.get("bed_y"))
-            _set_int("max_z",                    printer.get("max_z"))
-
-            _KIN_MAP = {"cartesian": 0, "corexy": 1, "delta": 2}
-            kin_val = printer.get("kinematics", "cartesian")
-            if kin_val in _KIN_MAP:
-                w["kinematics"].setCurrentIndex(_KIN_MAP[kin_val])
-
-            _ORIG_MAP = {"front_left": 0, "center": 1}
-            orig_val = printer.get("origin", "front_left")
-            if orig_val in _ORIG_MAP:
-                w["origin"].setCurrentIndex(_ORIG_MAP[orig_val])
+            _set_dbl("nozzle_diameter", printer.get("nozzle_diameter"))
+            _set_int("nozzle_temp",     printer.get("nozzle_temp"))
+            _set_int("bed_temp",        printer.get("bed_temp"))
 
             _set_dbl("layer_height",             ps.get("layer_height"))
             _set_int("print_speed",              ps.get("print_speed"))
@@ -603,27 +550,8 @@ class SettingsPanel(QScrollArea):
             self._building = False
 
     def load_printer_profile(self, profile: dict) -> None:
-        """Apply hardware fields from a printer profile (bed dims, origin, kinematics).
-        Does NOT touch nozzle size, temperatures, speeds, or print settings."""
-        self._building = True
-        try:
-            w = self._widgets
-            _KIN_MAP  = {"cartesian": 0, "corexy": 1, "delta": 2}
-            _ORIG_MAP = {"front_left": 0, "center": 1}
-
-            if "bed_x" in profile:
-                w["bed_x"].setValue(int(profile["bed_x"]))
-            if "bed_y" in profile:
-                w["bed_y"].setValue(int(profile["bed_y"]))
-            if "max_z" in profile:
-                w["max_z"].setValue(int(profile["max_z"]))
-            kin = profile.get("kinematics", "")
-            if kin in _KIN_MAP:
-                w["kinematics"].setCurrentIndex(_KIN_MAP[kin])
-            orig = profile.get("origin", "")
-            if orig in _ORIG_MAP:
-                w["origin"].setCurrentIndex(_ORIG_MAP[orig])
-        finally:
-            self._building = False
+        """Called when the active printer profile changes.
+        Bed dims / kinematics / origin live in the profile, not in this panel.
+        Emit settings_changed so the main window can refresh viewers."""
         self.settings_changed.emit()
 
