@@ -177,7 +177,8 @@ def main():
     # Inject SVG arrow paths (absolute, forward-slash) into the stylesheet
     arrow_up   = str(_RES / "arrow_up.svg").replace("\\", "/")
     arrow_down = str(_RES / "arrow_down.svg").replace("\\", "/")
-    app.setStyleSheet(DARK_STYLE.format(arrow_up=arrow_up, arrow_down=arrow_down))
+    css = DARK_STYLE.replace("{arrow_up}", arrow_up).replace("{arrow_down}", arrow_down)
+    app.setStyleSheet(css)
 
     # Import here (after path setup) to avoid circular issues
     sys.path.insert(0, str(Path(__file__).parent.parent))

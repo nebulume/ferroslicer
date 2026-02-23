@@ -57,7 +57,9 @@ flat in  vec3 vNormal;
 uniform float uAlpha;
 out vec4 fragColor;
 void main() {
-    // Flip normal for back-facing fragments so non-convex models look correct
+    // Use face normal for front faces; flip for back faces.
+    // Back faces are interior surfaces or mis-wound triangles — render them
+    // dark so the model looks full everywhere with no holes.
     vec3 n = normalize(gl_FrontFacing ? vNormal : -vNormal);
 
     vec3 key  = normalize(vec3( 0.55,  0.70,  1.0));
@@ -69,6 +71,10 @@ void main() {
     float dr = max(dot(n, rim),  0.0);
 
     float lit = clamp(0.22 + 0.62*dk + 0.26*df + 0.14*dr, 0.0, 1.0);
+
+    // Strongly darken back-facing fragments (interior walls, wrong-winding)
+    // so the outside surface always reads as brighter / dominant.
+    if (!gl_FrontFacing) lit *= 0.25;
 
     fragColor = vec4(
         0.20 + 0.65 * lit,
@@ -182,7 +188,7 @@ class _STLViewerGL(QOpenGLWidget):
         self._raw_extents: tuple = (0.0, 0.0, 0.0)   # (x_mm, y_mm, z_mm)
 
         # ── Transparent mode ──────────────────────────────────────────────────
-        self._transparent: bool = False
+        self._transparent: bool = True
         self._alpha_loc:   int  = -1
 
         # ── Data state ────────────────────────────────────────────────────────
@@ -447,11 +453,10 @@ class _STLViewerGL(QOpenGLWidget):
                 gl.glDepthMask(gl.GL_FALSE)
                 alpha = 0.35
             else:
-                # Cull back faces so interior surfaces are never visible.
-                # STL files for 3D printing use outward normals → exterior faces
-                # are front-facing (CCW) and interior faces are culled.
-                gl.glEnable(gl.GL_CULL_FACE)
-                gl.glCullFace(gl.GL_BACK)
+                # Don't cull — the fragment shader darkens back-facing fragments
+                # instead (lit *= 0.25).  This means bad-winding faces look dark
+                # rather than punching holes in the model.
+                gl.glDisable(gl.GL_CULL_FACE)
                 gl.glDisable(gl.GL_BLEND)
                 gl.glDepthMask(gl.GL_TRUE)
                 alpha = 1.0
@@ -464,7 +469,6 @@ class _STLViewerGL(QOpenGLWidget):
             self._prog.release()
             if self._transparent:
                 gl.glDepthMask(gl.GL_TRUE)
-            gl.glDisable(gl.GL_CULL_FACE)   # box uses GL_LINES — culling irrelevant but clean
 
         # ── Print volume box (unscaled — always shows the actual bed size) ─
         if self._box_n_verts > 0 and self._box_prog is not None:
@@ -693,7 +697,7 @@ class STLViewer(QWidget):
         bl.addStretch()
 
         self._transparent_check = QCheckBox("Transparent")
-        self._transparent_check.setChecked(False)
+        self._transparent_check.setChecked(True)
         self._transparent_check.setStyleSheet(
             "QCheckBox { color: #779; font-size: 11px; }"
             "QCheckBox::indicator { width: 13px; height: 13px; }"

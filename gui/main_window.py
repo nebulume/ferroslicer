@@ -38,7 +38,7 @@ from gui.widgets.toolpath_viewer import ToolpathViewer
 from gui.widgets.settings_panel  import SettingsPanel
 from gui.widgets.file_browser    import FileBrowserWidget
 from gui.workers.slicer_worker   import SlicerWorker
-from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings, save_app_settings
+from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings, save_app_settings, get_active_profile
 from gui.dialogs.print_history   import PrintHistoryDialog
 from gui.dialogs.gcode_library   import GCodeLibraryDialog
 import db.print_db as pdb
@@ -465,10 +465,12 @@ class MainWindow(QMainWindow):
         overrides = self.settings_panel.get_config_overrides()
         overrides["model_scale"] = self.stl_viewer.model_scale
         settings  = self._app_settings
+        profile   = get_active_profile(settings)
         custom_gcode = {
-            "start_gcode": settings.get("start_gcode", ""),
-            "end_gcode":   settings.get("end_gcode",   ""),
+            "start_gcode": profile.get("start_gcode", ""),
+            "end_gcode":   profile.get("end_gcode",   ""),
         }
+        overrides["printer_profile"] = profile
 
         stl_stem = Path(self._stl_path).stem[:20]
         ms       = overrides.get("mesh_settings", {})
@@ -617,6 +619,9 @@ class MainWindow(QMainWindow):
         dlg = AppSettingsDialog(self)
         if dlg.exec():
             self._app_settings = load_app_settings()
+            # Apply active printer profile's hardware settings to the slicer panel
+            profile = get_active_profile(self._app_settings)
+            self.settings_panel.load_printer_profile(profile)
 
     def _open_library(self):
         dlg = GCodeLibraryDialog(self)

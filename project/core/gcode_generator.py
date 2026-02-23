@@ -48,6 +48,10 @@ class GCodeGenerator:
         # ── First layer ───────────────────────────────────────────────────────
         first_layer_speed_pct: int = 50,
         first_layer_squish: float = 15.0,
+        # ── Firmware ──────────────────────────────────────────────────────────
+        firmware: str = "klipper",      # "klipper" | "marlin" | "rrf"
+        retract_dist: float = 0.8,      # mm
+        retract_speed: float = 40.0,    # mm/s
     ):
         self.nozzle_diameter = nozzle_diameter
         self.layer_height = layer_height
@@ -77,6 +81,9 @@ class GCodeGenerator:
         self.first_layer_speed_pct = first_layer_speed_pct
         self.first_layer_squish = first_layer_squish
         self._first_layer_z = layer_height * (1.0 - first_layer_squish / 100.0)
+        self.firmware = firmware.lower()
+        self.retract_dist = retract_dist
+        self.retract_speed = retract_speed
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -93,6 +100,20 @@ class GCodeGenerator:
             self.build_plate_center = Vector3(0, 0, 0)
         else:  # front_left (default for Cartesian/CoreXY)
             self.build_plate_center = Vector3(bed_x / 2.0, bed_y / 2.0, 0)
+
+    # ── Firmware-aware retract/unretract ─────────────────────────────────────
+
+    def _retract(self) -> str:
+        """Return the firmware-appropriate retract command."""
+        if self.firmware == "klipper":
+            return "G10"
+        return f"G1 E-{self.retract_dist:.2f} F{int(self.retract_speed * 60)}"
+
+    def _unretract(self) -> str:
+        """Return the firmware-appropriate unretract command."""
+        if self.firmware == "klipper":
+            return "G11"
+        return f"G1 E{self.retract_dist:.2f} F{int(self.retract_speed * 60)}"
 
     def generate_gcode(
         self,
@@ -136,7 +157,7 @@ class GCodeGenerator:
         # If spiral points provided, generate continuous spiral GCode
         if spiral_points:
             self.gcode_lines.append("; --- UNRETRACT BEFORE PRINT (SPIRAL) ---")
-            self.gcode_lines.append("G11")
+            self.gcode_lines.append(self._unretract())
             self.gcode_lines.append("")
 
             # Fast path for RustSpiralPoints: work on raw flat arrays to avoid
@@ -211,7 +232,7 @@ class GCodeGenerator:
 
             # Unretracting before print starts
             self.gcode_lines.append("; --- UNRETRACT BEFORE PRINT ---")
-            self.gcode_lines.append("G11")
+            self.gcode_lines.append(self._unretract())
             self.gcode_lines.append("")
 
             # Process each layer with offset
@@ -247,12 +268,29 @@ class GCodeGenerator:
             for line in rendered.splitlines():
                 self.gcode_lines.append(line)
         else:
-            # Default Klipper macro start sequence
-            self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=bed_temp VALUE={self.bed_temp}")
-            self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=extruder_temp VALUE={self.nozzle_temp}")
             pwm_value = max(0, min(255, int((self.fan_speed / 100.0) * 255)))
-            self.gcode_lines.append(f"M106 S{pwm_value}")
-            self.gcode_lines.append("START_PRINT")
+            if self.firmware == "marlin":
+                self.gcode_lines.append(f"M140 S{int(self.bed_temp)}  ; Set bed temp (no wait)")
+                self.gcode_lines.append(f"M104 S{int(self.nozzle_temp)}  ; Set hotend temp (no wait)")
+                self.gcode_lines.append(f"M190 S{int(self.bed_temp)}  ; Wait for bed temp")
+                self.gcode_lines.append(f"M109 S{int(self.nozzle_temp)}  ; Wait for hotend temp")
+                self.gcode_lines.append("G28  ; Home all axes")
+                self.gcode_lines.append("G29  ; Auto bed leveling")
+                self.gcode_lines.append(f"M106 S{pwm_value}  ; Fan speed")
+                self.gcode_lines.append("G92 E0  ; Reset extruder")
+            elif self.firmware == "rrf":
+                self.gcode_lines.append(f"M140 S{int(self.bed_temp)}  ; Set bed temp")
+                self.gcode_lines.append(f"M109 S{int(self.nozzle_temp)}  ; Wait for hotend temp")
+                self.gcode_lines.append(f"M190 S{int(self.bed_temp)}  ; Wait for bed temp")
+                self.gcode_lines.append("G28  ; Home all axes")
+                self.gcode_lines.append(f"M106 S{pwm_value}  ; Fan speed")
+                self.gcode_lines.append("G92 E0  ; Reset extruder")
+            else:
+                # Default Klipper macro start sequence
+                self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=bed_temp VALUE={self.bed_temp}")
+                self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=extruder_temp VALUE={self.nozzle_temp}")
+                self.gcode_lines.append(f"M106 S{pwm_value}")
+                self.gcode_lines.append("START_PRINT")
         self.gcode_lines.append("")
         self.gcode_lines.append("; Absolute positioning for X/Y/Z, relative for E")
         self.gcode_lines.append("G90")
@@ -292,7 +330,7 @@ class GCodeGenerator:
         
         # Step 2: Retract to prevent oozing during travel to purge
         self.gcode_lines.append("; Retract to prevent oozing")
-        self.gcode_lines.append("G10")
+        self.gcode_lines.append(self._retract())
         self.gcode_lines.append("")
         
         # Step 3: Calculate purge line position (20mm OUTSIDE the print on the RIGHT side)
@@ -352,7 +390,7 @@ class GCodeGenerator:
         extrusion_first = self._calculate_extrusion(first_segment_length)
         
         self.gcode_lines.append("; Unretract and purge first 20mm (extruding)")
-        self.gcode_lines.append("G11")  # Unretract
+        self.gcode_lines.append(self._unretract())  # Unretract
         self.gcode_lines.append(f"G1 X{purge_mid.x:.3f} Y{purge_mid.y:.3f} Z{purge_mid.z:.3f} E{extrusion_first:.5f} F{purge_speed * 60:.0f}")
         self.current_position = purge_mid
         self.current_extrusion += extrusion_first
@@ -365,7 +403,7 @@ class GCodeGenerator:
         
         # Step 5: Retract after purge to prevent stringing to print start
         self.gcode_lines.append("; Retract after purge to prevent stringing")
-        self.gcode_lines.append("G10")
+        self.gcode_lines.append(self._retract())
         self.gcode_lines.append("")
 
     def _add_skirt(self, spiral_points: list, offset: Vector3) -> None:
@@ -441,7 +479,7 @@ class GCodeGenerator:
             self._add_move(skirt_points[0], is_travel=True)
             
             self.gcode_lines.append("; Unretract before skirt")
-            self.gcode_lines.append("G11")
+            self.gcode_lines.append(self._unretract())
             
             # Print skirt loop with extrusion.
             # Use nozzle_diameter (not the 1.2× main-print width) so the skirt
@@ -460,7 +498,7 @@ class GCodeGenerator:
                 self._add_move(curr_point, extrusion_amount=extrusion)
             
             self.gcode_lines.append("; Retract after skirt")
-            self.gcode_lines.append("G10")
+            self.gcode_lines.append(self._retract())
             self.gcode_lines.append("")
 
     def _add_purge_line(
@@ -550,7 +588,7 @@ class GCodeGenerator:
 
         # Retract after purge line to stop extrusion before print starts
         self.gcode_lines.append("; Retract to stop extrusion")
-        self.gcode_lines.append("G10")
+        self.gcode_lines.append(self._retract())
 
         self.gcode_lines.append("")
 
@@ -663,7 +701,7 @@ class GCodeGenerator:
                 self.gcode_lines.append(line)
         else:
             self.gcode_lines.append("; Retract filament to prevent oozing")
-            self.gcode_lines.append("G10")
+            self.gcode_lines.append(self._retract())
             z_raise = 10.0
             new_z = self.current_position.z + z_raise
             self.gcode_lines.append(f"; Raise Z by {z_raise}mm to clear print")
@@ -676,7 +714,12 @@ class GCodeGenerator:
             self.current_position.x = ec_x
             self.current_position.y = ec_y
             self.gcode_lines.append("")
-            self.gcode_lines.append("END_PRINT")
+            if self.firmware in ("marlin", "rrf"):
+                self.gcode_lines.append("M104 S0  ; Turn off hotend")
+                self.gcode_lines.append("M140 S0  ; Turn off bed")
+                self.gcode_lines.append("M84  ; Disable motors")
+            else:
+                self.gcode_lines.append("END_PRINT")
 
     def _calculate_centering_offset(
         self,

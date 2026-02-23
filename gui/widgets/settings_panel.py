@@ -601,3 +601,29 @@ class SettingsPanel(QScrollArea):
             _set_combo("base_transition",  ms.get("base_transition"))
         finally:
             self._building = False
+
+    def load_printer_profile(self, profile: dict) -> None:
+        """Apply hardware fields from a printer profile (bed dims, origin, kinematics).
+        Does NOT touch nozzle size, temperatures, speeds, or print settings."""
+        self._building = True
+        try:
+            w = self._widgets
+            _KIN_MAP  = {"cartesian": 0, "corexy": 1, "delta": 2}
+            _ORIG_MAP = {"front_left": 0, "center": 1}
+
+            if "bed_x" in profile:
+                w["bed_x"].setValue(int(profile["bed_x"]))
+            if "bed_y" in profile:
+                w["bed_y"].setValue(int(profile["bed_y"]))
+            if "max_z" in profile:
+                w["max_z"].setValue(int(profile["max_z"]))
+            kin = profile.get("kinematics", "")
+            if kin in _KIN_MAP:
+                w["kinematics"].setCurrentIndex(_KIN_MAP[kin])
+            orig = profile.get("origin", "")
+            if orig in _ORIG_MAP:
+                w["origin"].setCurrentIndex(_ORIG_MAP[orig])
+        finally:
+            self._building = False
+        self.settings_changed.emit()
+
