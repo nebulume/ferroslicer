@@ -41,24 +41,11 @@ _VERT = """
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 uniform mat4 uMVP;
-flat out vec3 vNormal;
+flat out vec3 vColor;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    vNormal = normalize(aNormal);
-}
-"""
+    vec3 n = normalize(aNormal);
 
-_FRAG = """
-#version 330 core
-flat in  vec3 vNormal;
-out vec4 fragColor;
-void main() {
-    // Flip normal for back-facing triangles so they light correctly.
-    // This makes STL files with inconsistent winding show as solid rather
-    // than having gaps where back-faced triangles were culled.
-    vec3 n = gl_FrontFacing ? vNormal : -vNormal;
-
-    // Three fixed lights in model space — shading never changes on rotation.
     vec3 key  = normalize(vec3( 0.55,  0.70,  1.0));
     vec3 fill = normalize(vec3(-0.60, -0.25,  0.55));
     vec3 rim  = normalize(vec3( 0.10,  0.40, -0.85));
@@ -69,13 +56,20 @@ void main() {
 
     float lit = clamp(0.22 + 0.62*dk + 0.26*df + 0.14*dr, 0.0, 1.0);
 
-    // Warm off-white palette — shadows are mid-grey, not near-black
-    vec3 color = vec3(
+    vColor = vec3(
         0.20 + 0.65 * lit,
         0.21 + 0.62 * lit,
         0.24 + 0.52 * lit
     );
-    fragColor = vec4(color, 1.0);
+}
+"""
+
+_FRAG = """
+#version 330 core
+flat in  vec3 vColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vec4(vColor, 1.0);
 }
 """
 
@@ -279,16 +273,33 @@ class STLViewer(QOpenGLWidget):
         verts = verts[:, :, [0, 2, 1]].copy()
         verts[:, :, 1] *= -1.0
 
-        # Recompute face normals from vertices (STL stored normals are often zero)
+        # Recompute face normals from the already-transformed vertices.
+        # Do NOT apply any additional axis-swap — normals computed here are
+        # already in screen-space coordinates.
         v0, v1, v2 = verts[:, 0], verts[:, 1], verts[:, 2]
         face_normals = np.cross(v1 - v0, v2 - v0)
         norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
         norms = np.where(norms > 1e-12, norms, 1.0)
         face_normals = (face_normals / norms).astype(np.float32)
 
-        # Apply same swap/flip to normals so they match transformed vertices
-        face_normals = face_normals[:, [0, 2, 1]].copy()
-        face_normals[:, 1] *= -1.0
+        # Fix inverted winding: after centering the model to the origin,
+        # each triangle's outward direction is (tri_center - origin) = tri_center.
+        # If dot(tri_center, face_normal) < 0 the normal points inward — swap
+        # v1/v2 to reverse winding and recompute so culling works correctly.
+        tri_centers = (v0 + v1 + v2) / 3.0
+        dot_check = np.einsum('ij,ij->i', tri_centers, face_normals)
+        inverted = dot_check < 0
+        if np.any(inverted):
+            verts[inverted, 1], verts[inverted, 2] = (
+                verts[inverted, 2].copy(), verts[inverted, 1].copy()
+            )
+            v0f = verts[inverted, 0]
+            v1f = verts[inverted, 1]
+            v2f = verts[inverted, 2]
+            fn = np.cross(v1f - v0f, v2f - v0f)
+            fn_len = np.linalg.norm(fn, axis=1, keepdims=True)
+            fn_len = np.where(fn_len > 1e-12, fn_len, 1.0)
+            face_normals[inverted] = (fn / fn_len).astype(np.float32)
 
         # Build interleaved VBO: [x y z nx ny nz] × 3 vertices per triangle
         N = len(verts)
@@ -314,9 +325,8 @@ class STLViewer(QOpenGLWidget):
     def initializeGL(self):
         gl.glClearColor(0.11, 0.11, 0.14, 1.0)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        # No backface culling — the fragment shader handles two-sided lighting
-        # via gl_FrontFacing, so back-facing triangles (inconsistent STL winding)
-        # render correctly instead of disappearing as gaps.
+        gl.glEnable(gl.GL_CULL_FACE)
+        gl.glCullFace(gl.GL_BACK)
 
         self._prog = QOpenGLShaderProgram(self)
         self._prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _VERT)

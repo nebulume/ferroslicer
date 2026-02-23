@@ -229,10 +229,13 @@ class GCodeLoaderThread(QThread):
                 last_cross = 0.0
 
                 for i, (x, y, z) in enumerate(zip(xs, ys, zs)):
-                    # Each new segment starts after a travel — reset to avoid
-                    # accumulating the large angular jump over the travel gap.
+                    # Reset ALL tracking at each segment start.  Without this,
+                    # the partial-revolution accumulation from the purge line and
+                    # skirt offsets every seam position in the main spiral.
                     if i in seg_start_set:
-                        prev_pa = None
+                        prev_pa    = None
+                        cumul_pos  = 0.0
+                        last_cross = 0.0
 
                     pa = math.atan2(y - cy, x - cx)
                     if prev_pa is not None:
