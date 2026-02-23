@@ -182,13 +182,18 @@ class SettingsPanel(QScrollArea):
     def _add_printer_group(self, parent):
         g = QGroupBox("Printer")
         f = QFormLayout(g)
-        self._dbl(f, "nozzle_diameter",   "Nozzle (mm):",      1.0,  0.1,  2.0,  0.1)
-        self._dbl(f, "filament_diameter", "Filament (mm):",     1.75, 1.0,  3.0,  0.05)
-        self._int(f, "nozzle_temp",       "Nozzle temp (°C):", 260,  150,  400)
-        self._int(f, "bed_temp",          "Bed temp (°C):",      65,    0,  130)
+        self._dbl(f, "nozzle_diameter",   "Nozzle (mm):",      1.0,  0.1,  2.0,  0.1,
+                  tip="Diameter of the nozzle tip. Common sizes: 0.4, 0.6, 1.0mm")
+        self._dbl(f, "filament_diameter", "Filament (mm):",     1.75, 1.0,  3.0,  0.05,
+                  tip="Diameter of the filament spool. Standard FDM is 1.75mm")
+        self._int(f, "nozzle_temp",       "Nozzle temp (°C):", 260,  150,  400,
+                  tip="Hotend temperature. Typical range: 200–260°C for PLA/PETG")
+        self._int(f, "bed_temp",          "Bed temp (°C):",      65,    0,  130,
+                  tip="Heated bed temperature. 0 = bed off. Typical: 60–70°C for PLA")
 
         kin = QComboBox()
         kin.addItems(["Cartesian", "CoreXY", "Delta"])
+        kin.setToolTip("Printer motion system type — determines optimal GCode commands")
         kin.currentIndexChanged.connect(self._emit)
         self._widgets["kinematics"] = kin
         f.addRow("Kinematics:", kin)
@@ -198,15 +203,16 @@ class SettingsPanel(QScrollArea):
     def _add_build_volume_group(self, parent):
         g = QGroupBox("Build Volume")
         f = QFormLayout(g)
-        self._int(f, "bed_x",  "Bed X (mm):", 220, 50, 2000)
-        self._int(f, "bed_y",  "Bed Y (mm):", 220, 50, 2000)
-        self._int(f, "max_z",  "Max Z (mm):", 280, 50, 2000)
+        self._int(f, "bed_x",  "Bed X (mm):", 220, 50, 2000, tip="Build plate width in mm")
+        self._int(f, "bed_y",  "Bed Y (mm):", 220, 50, 2000, tip="Build plate depth in mm")
+        self._int(f, "max_z",  "Max Z (mm):", 280, 50, 2000, tip="Maximum printable height in mm")
 
         orig = QComboBox()
         orig.addItems([
             "Front-Left Corner",
             "Center (delta / RRF)",
         ])
+        orig.setToolTip("Where (0,0) is on your printer.\nFront-left for most Cartesian/CoreXY; Center for Delta printers")
         orig.currentIndexChanged.connect(self._emit)
         self._widgets["origin"] = orig
         f.addRow("Origin (0,0):", orig)
@@ -216,21 +222,33 @@ class SettingsPanel(QScrollArea):
     def _add_motion_group(self, parent):
         g = QGroupBox("Motion")
         f = QFormLayout(g)
-        self._int(f, "print_accel",  "Print accel (mm/s²):",  500,  100, 20000)
-        self._int(f, "travel_accel", "Travel accel (mm/s²):", 1500, 100, 30000)
-        self._dbl(f, "z_hop",        "Z-hop (mm):",            0.0,  0.0,   5.0, 0.1)
+        self._int(f, "print_accel",  "Print accel (mm/s²):",  500,  100, 20000,
+                  tip="Acceleration during printing moves. Lower = smoother but slower")
+        self._int(f, "travel_accel", "Travel accel (mm/s²):", 1500, 100, 30000,
+                  tip="Acceleration during travel (non-printing) moves")
+        self._dbl(f, "z_hop",        "Z-hop (mm):",            0.0,  0.0,   5.0, 0.1,
+                  tip="Lift the nozzle by this amount when travelling to avoid clipping the print.\n0 = disabled")
         parent.addWidget(g)
 
     def _add_print_group(self, parent):
         g = QGroupBox("Print Settings")
         f = QFormLayout(g)
-        self._dbl(f, "layer_height",         "Layer height (mm):",   0.5,  0.05, 2.0,   0.05)
-        self._int(f, "print_speed",          "Print speed (mm/s):",   35,     5, 500)
-        self._int(f, "first_layer_speed_pct","First layer speed (%):", 50,    10, 100)
-        self._dbl(f, "first_layer_squish",   "1st layer squish (%):", 15.0,  0.0, 80.0, 5.0)
-        self._int(f, "travel_speed",         "Travel speed (mm/s):",   40,    10, 800)
-        self._int(f, "fan_speed",            "Fan speed (%):",          25,     0, 100)
-        self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",     12.0,  0.5, 50.0,  0.5)
+        self._dbl(f, "layer_height",         "Layer height (mm):",    0.5,  0.05, 2.0,  0.05,
+                  tip="Thickness of each printed layer. Smaller = more detail, slower print")
+        self._int(f, "print_speed",          "Print speed (mm/s):",    35,     5, 500,
+                  tip="Speed for extrusion moves. Higher speeds need higher temperatures and volumetric flow")
+        self._int(f, "first_layer_speed_pct","First layer speed (%):", 50,    10, 100,
+                  tip="Print the first layer at this % of print speed. Slower = better bed adhesion")
+        self._dbl(f, "first_layer_squish",   "1st layer squish (%):", 15.0,  0.0, 80.0, 5.0,
+                  tip="Reduce the first layer Z height by this % to press the nozzle closer to the bed.\n"
+                      "Helps adhesion and controls elephant's foot. 0 = no squish, 50 = half height")
+        self._int(f, "travel_speed",         "Travel speed (mm/s):",   40,    10, 800,
+                  tip="Speed for non-printing (travel) moves")
+        self._int(f, "fan_speed",            "Fan speed (%):",           25,    0, 100,
+                  tip="Part cooling fan speed. 0 = off. Higher = better bridging and overhangs, worse layer bonding")
+        self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",      12.0,  0.5, 50.0, 0.5,
+                  tip="Maximum plastic flow rate in mm³/s. Limits print speed to prevent under-extrusion.\n"
+                      "Your hotend's capability — typically 8–15mm³/s for standard, up to 40+ for high-flow")
         parent.addWidget(g)
 
     def _add_mode_group(self, parent):
@@ -239,12 +257,16 @@ class SettingsPanel(QScrollArea):
 
         cb = QComboBox()
         cb.addItems(["Spiral Vase (continuous)", "Layer Mesh"])
+        cb.setToolTip("Spiral Vase: single-wall continuous spiral, no seam, ideal for vases.\n"
+                      "Layer Mesh: traditional layer-by-layer with wave pattern on each layer")
         cb.currentIndexChanged.connect(self._on_mode_change)
         self._widgets["vase_mode"] = cb
         cb.currentIndexChanged.connect(self._emit)
         f.addRow("Mode:", cb)
 
-        dbl = self._dbl(f, "spiral_points_per_degree", "Spiral res (pts/°):", 1.2, 0.1, 5.0, 0.1)
+        dbl = self._dbl(f, "spiral_points_per_degree", "Spiral res (pts/°):", 1.2, 0.1, 5.0, 0.1,
+                        tip="Sampling resolution of the spiral path. 1.2 pts/° = ~432 points/revolution.\n"
+                            "Higher = smoother curves but larger GCode file")
         self._spiral_row = (f, dbl)
 
         parent.addWidget(g)
@@ -253,18 +275,24 @@ class SettingsPanel(QScrollArea):
         g = QGroupBox("Wave Pattern")
         f = QFormLayout(g)
 
-        self._dbl(f, "wave_amplitude",    "Amplitude (mm):",   2.0, 0.0, 20.0, 0.1)
+        self._dbl(f, "wave_amplitude",    "Amplitude (mm):",   2.0, 0.0, 20.0, 0.1,
+                  tip="Peak-to-trough height of the surface waves in mm. 0 = smooth cylinder")
 
         # Wave frequency: count OR spacing
         freq_cb = QComboBox()
         freq_cb.addItems(["Per revolution (count)", "Per distance (spacing mm)"])
+        freq_cb.setToolTip("How to set wave frequency:\n"
+                           "Per revolution: fixed number of waves around the circumference\n"
+                           "Per distance: spacing between wave peaks in mm (adapts to model size)")
         freq_cb.currentIndexChanged.connect(self._on_freq_mode_change)
         self._widgets["wave_freq_mode"] = freq_cb
         freq_cb.currentIndexChanged.connect(self._emit)
         f.addRow("Frequency mode:", freq_cb)
 
-        self._wave_count_spin = self._int(f, "wave_count",   "Waves / revolution:", 120, 1, 2000)
-        self._wave_spacing_spin = self._dbl(f, "wave_spacing", "Wave spacing (mm):", 4.0, 0.1, 50.0, 0.1)
+        self._wave_count_spin = self._int(f, "wave_count",   "Waves / revolution:", 120, 1, 2000,
+                                          tip="Number of complete wave cycles around the model per revolution")
+        self._wave_spacing_spin = self._dbl(f, "wave_spacing", "Wave spacing (mm):", 4.0, 0.1, 50.0, 0.1,
+                                            tip="Distance between wave peaks in mm.\nAdapts to model circumference so waves stay evenly spaced")
         # Show count by default, hide spacing
         self._wave_spacing_spin.setVisible(False)
         # Find label for spacing row
@@ -274,14 +302,22 @@ class SettingsPanel(QScrollArea):
 
         ptn = QComboBox()
         ptn.addItems(["sine", "triangular", "sawtooth"])
+        ptn.setToolTip("Wave shape:\nSine = smooth rounded waves\nTriangular = sharp V-peaks\nSawtooth = asymmetric ramp up, sharp drop")
         ptn.currentIndexChanged.connect(self._emit)
         self._widgets["wave_pattern"] = ptn
         f.addRow("Pattern:", ptn)
 
-        self._int(f,  "wave_smoothness",   "Smoothness (1-10):",  10,  1, 10)
-        self._int(f,  "layer_alternation", "Alternation (rev):",   2,  1, 20)
-        self._dbl(f,  "phase_offset",      "Phase offset (%):",   50,  0, 100, 1.0)
-        self._dbl(f,  "seam_shift",        "Seam shift (waves):", 0.0, 0.0, 10.0, 0.1)
+        self._int(f,  "wave_smoothness",   "Smoothness (1-10):",  10,  1, 10,
+                  tip="How smooth the wave shape is. 1 = sharp pointy peaks, 10 = very round and gradual")
+        self._int(f,  "layer_alternation", "Alternation (rev):",   2,  1, 20,
+                  tip="Number of revolutions before the wave phase shifts. Creates the interlocking mesh pattern.\n"
+                      "2 = phase shifts every 2 revolutions (good default)")
+        self._dbl(f,  "phase_offset",      "Phase offset (%):",   50,  0, 100, 1.0,
+                  tip="How far the wave shifts at each alternation point.\n"
+                      "50% = half a wave offset — creates the classic diamond mesh look")
+        self._dbl(f,  "seam_shift",        "Seam shift (waves):", 0.0, 0.0, 10.0, 0.1,
+                  tip="Extend the alternation cycle by this many waves to move the seam to a different position.\n"
+                      "0 = no shift")
 
         sp = QComboBox()
         sp.addItems(["auto", "front", "back", "left", "right",
@@ -293,23 +329,35 @@ class SettingsPanel(QScrollArea):
         self._widgets["seam_position"] = sp
         f.addRow("Seam position:", sp)
 
-        self._dbl(f, "seam_transition_waves", "Seam blend (waves):", 0.0, 0.0, 10.0, 0.5)
+        self._dbl(f, "seam_transition_waves", "Seam blend (waves):", 0.0, 0.0, 10.0, 0.5,
+                  tip="Blend the seam phase transition over this many waves.\n"
+                      "0 = hard step. 2.0 = gradual two-wave crossfade (less visible seam)")
 
         parent.addWidget(g)
 
     def _add_base_group(self, parent):
         g = QGroupBox("Base Integrity")
         f = QFormLayout(g)
-        self._dbl(f, "base_height",    "Base height (mm):", 28.0, 0.0, 200.0, 0.5)
+        self._dbl(f, "base_height",    "Base height (mm):", 28.0, 0.0, 200.0, 0.5,
+                  tip="Height of the reinforced base zone before mesh waves start. "
+                      "The base uses reduced or no amplitude for structural integrity")
 
         bm = QComboBox()
         bm.addItems(["fewer_gaps", "tighter_waves", "solid_then_mesh"])
+        bm.setToolTip("Base reinforcement mode:\n"
+                      "Fewer gaps: reduces wave amplitude to minimize gaps\n"
+                      "Tighter waves: compresses wave spacing in the base\n"
+                      "Solid then mesh: prints solid layers first, then transitions to mesh")
         bm.currentIndexChanged.connect(self._emit)
         self._widgets["base_mode"] = bm
         f.addRow("Base mode:", bm)
 
         bt = QComboBox()
         bt.addItems(["exponential", "linear", "step"])
+        bt.setToolTip("How amplitude ramps up from base to full mesh:\n"
+                      "Exponential: slow start, fast finish (smooth)\n"
+                      "Linear: constant rate\n"
+                      "Step: instant jump to full amplitude")
         bt.currentIndexChanged.connect(self._emit)
         self._widgets["base_transition"] = bt
         f.addRow("Transition:", bt)
@@ -322,33 +370,40 @@ class SettingsPanel(QScrollArea):
 
         chk = QCheckBox("Enable skirt")
         chk.setChecked(True)
+        chk.setToolTip("Print a single loop around the model base to prime the nozzle and help bed adhesion")
         chk.stateChanged.connect(self._emit)
         self._widgets["skirt_enabled"] = chk
         f.addRow("", chk)
 
-        self._dbl(f, "skirt_distance", "Skirt gap (mm):",  0.0, 0.0, 20.0, 0.5)
-        self._int(f, "skirt_height",   "Skirt layers:",      1,   1,   10)
+        self._dbl(f, "skirt_distance", "Skirt gap (mm):",  0.0, 0.0, 20.0, 0.5,
+                  tip="Gap between skirt loop and the model. 0 = touching (skirt sits against the model)")
+        self._int(f, "skirt_height",   "Skirt layers:",      1,   1,   10,
+                  tip="Number of skirt loops stacked vertically")
 
         parent.addWidget(g)
 
     # ── Widget factories ─────────────────────────────────────────────────────
 
-    def _dbl(self, form, key, label, default, lo, hi, step) -> QDoubleSpinBox:
+    def _dbl(self, form, key, label, default, lo, hi, step, tip: str = "") -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
         spin.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
         spin.setRange(lo, hi)
         spin.setSingleStep(step)
         spin.setDecimals(len(str(step).split(".")[-1]) if "." in str(step) else 1)
         spin.setValue(default)
+        if tip:
+            spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
-        form.addRow(label, spin)
+        lbl = form.addRow(label, spin)
         return spin
 
-    def _int(self, form, key, label, default, lo, hi) -> QSpinBox:
+    def _int(self, form, key, label, default, lo, hi, tip: str = "") -> QSpinBox:
         spin = QSpinBox()
         spin.setRange(lo, hi)
         spin.setValue(default)
+        if tip:
+            spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
         form.addRow(label, spin)

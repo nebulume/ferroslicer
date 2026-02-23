@@ -14,19 +14,17 @@ from PyQt6.QtCore import Qt
 
 SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "app_settings.json"
 
-DEFAULT_START_GCODE = """; Custom start GCode — use {nozzle_temp}, {bed_temp}, {fan_speed} as placeholders
-; Example (Klipper):
+DEFAULT_START_GCODE = """; Default start GCode (shown when field is empty)
+; Supports placeholders: {bed_temp}, {nozzle_temp}, {fan_speed}
 SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=bed_temp VALUE={bed_temp}
 SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=extruder_temp VALUE={nozzle_temp}
 M106 S{fan_speed}
 START_PRINT"""
 
-DEFAULT_END_GCODE = """; Custom end GCode
+DEFAULT_END_GCODE = """; Default end GCode (shown when field is empty)
 G10
-G91
-G1 Z10 F600
-G90
-G1 X110 Y200 F4800
+G1 Z{print_height+10} F{travel_speed*60}
+G1 X{safe_x} Y{safe_y} F{travel_speed*60}
 END_PRINT"""
 
 
@@ -92,7 +90,7 @@ class AppSettingsDialog(QDialog):
         gcode_tab = QWidget()
         gcode_layout = QVBoxLayout(gcode_tab)
 
-        start_group = QGroupBox("Start GCode  (leave blank for default Klipper macros)")
+        start_group = QGroupBox("Start GCode  (leave blank to use default shown as placeholder)")
         sg_layout = QVBoxLayout(start_group)
         self.start_gcode_edit = QTextEdit()
         self.start_gcode_edit.setFont(self._mono_font())
@@ -104,7 +102,7 @@ class AppSettingsDialog(QDialog):
         sg_layout.addWidget(import_start_btn)
         gcode_layout.addWidget(start_group)
 
-        end_group = QGroupBox("End GCode  (leave blank for default)")
+        end_group = QGroupBox("End GCode  (leave blank to use default shown as placeholder)")
         eg_layout = QVBoxLayout(end_group)
         self.end_gcode_edit = QTextEdit()
         self.end_gcode_edit.setFont(self._mono_font())
