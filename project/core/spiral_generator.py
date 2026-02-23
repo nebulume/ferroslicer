@@ -729,7 +729,9 @@ class SpiralGenerator:
             # phase (degrees) = angle (deg) * waves_per_rev  (mod 360)
             base_phase = (spiral_point.angle * waves_per_rev) % 360.0
 
-            # Apply layer alternation and phase offset for diamond mesh pattern
+            # Blend wave VALUES (not phase constants) for a true crossfade:
+            # sin(θ) blended with sin(θ+180°)=-sin(θ) fades amplitude to 0
+            # at mid-transition then rebuilds in the opposite phase.
             if layer_alternation > 0 and phase_offset > 0:
                 cycle_len_revs = float(layer_alternation)
                 if seam_shift != 0 and waves_per_rev > 0:
@@ -738,27 +740,25 @@ class SpiralGenerator:
                 adjusted_rev = spiral_point.revolution + seam_revolution_offset
                 cycle = int(adjusted_rev / cycle_len_revs)
                 cur_shift = (cycle % 2) * (phase_offset / 100.0) * 360.0
+                cur_wave = self._calculate_wave_value(
+                    (base_phase + cur_shift) % 360.0, wave_pattern)
 
-                # Smooth transition at seam boundary
                 if seam_transition_waves > 0 and waves_per_rev > 0:
                     cycle_progress = (adjusted_rev / cycle_len_revs) % 1.0
                     transition_frac = seam_transition_waves / (waves_per_rev * cycle_len_revs)
                     if transition_frac > 0 and cycle_progress > 1.0 - transition_frac:
                         nxt_shift = ((cycle + 1) % 2) * (phase_offset / 100.0) * 360.0
+                        nxt_wave = self._calculate_wave_value(
+                            (base_phase + nxt_shift) % 360.0, wave_pattern)
                         t = (cycle_progress - (1.0 - transition_frac)) / transition_frac
                         t_smooth = 0.5 - 0.5 * math.cos(math.pi * t)
-                        phase_shift_degrees = cur_shift * (1.0 - t_smooth) + nxt_shift * t_smooth
+                        wave_raw = cur_wave * (1.0 - t_smooth) + nxt_wave * t_smooth
                     else:
-                        phase_shift_degrees = cur_shift
+                        wave_raw = cur_wave
                 else:
-                    phase_shift_degrees = cur_shift
-
-                phase = (base_phase + phase_shift_degrees) % 360.0
+                    wave_raw = cur_wave
             else:
-                phase = base_phase
-
-            # Calculate raw wave value (-1 to 1)
-            wave_raw = self._calculate_wave_value(phase, wave_pattern)
+                wave_raw = self._calculate_wave_value(base_phase % 360.0, wave_pattern)
             
             # Apply base integrity amplitude factor (reduces waves at base)
             amplitude_factor = 1.0

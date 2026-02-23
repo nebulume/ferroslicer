@@ -804,33 +804,34 @@ fn generate_spiral_with_waves(
                 return (wi.x, wi.y);
             }
 
-            // Phase calculation
+            // Wave value with phase alternation and optional seam crossfade.
+            // We blend wave VALUES (not phase constants) so the mesh pattern
+            // fades to zero amplitude then rebuilds in the opposite phase —
+            // a true crossfade rather than a phase slide.
             let base_phase = (wi.angle * waves_per_rev).rem_euclid(360.0);
-            let phase = if cycle_len_revs > 0.0 {
+            let wave_raw = if cycle_len_revs > 0.0 {
                 let adjusted_rev = wi.revolution + seam_revolution_offset;
                 let cycle = (adjusted_rev / cycle_len_revs) as i64;
                 let cur_shift = (cycle % 2) as f64 * (phase_offset_pct / 100.0) * 360.0;
-                // Smooth transition at seam boundary
-                let phase_shift = if seam_transition_waves > 0.0 && waves_per_rev > 0.0 {
-                    let cycle_progress = (adjusted_rev / cycle_len_revs).fract();
+                let cur_wave = spiral_wave_value((base_phase + cur_shift).rem_euclid(360.0), pat_code);
+                if seam_transition_waves > 0.0 && waves_per_rev > 0.0 {
+                    let cycle_progress = (adjusted_rev / cycle_len_revs).rem_euclid(1.0);
                     let transition_frac = seam_transition_waves / (waves_per_rev * cycle_len_revs);
                     if transition_frac > 0.0 && cycle_progress > 1.0 - transition_frac {
                         let nxt_shift = ((cycle + 1) % 2) as f64 * (phase_offset_pct / 100.0) * 360.0;
+                        let nxt_wave = spiral_wave_value((base_phase + nxt_shift).rem_euclid(360.0), pat_code);
                         let t = (cycle_progress - (1.0 - transition_frac)) / transition_frac;
                         let t_smooth = 0.5 - 0.5 * (t * std::f64::consts::PI).cos();
-                        cur_shift * (1.0 - t_smooth) + nxt_shift * t_smooth
+                        cur_wave * (1.0 - t_smooth) + nxt_wave * t_smooth
                     } else {
-                        cur_shift
+                        cur_wave
                     }
                 } else {
-                    cur_shift
-                };
-                (base_phase + phase_shift).rem_euclid(360.0)
+                    cur_wave
+                }
             } else {
-                base_phase
+                spiral_wave_value(base_phase, pat_code)
             };
-
-            let wave_raw = spiral_wave_value(phase, pat_code);
 
             // Amplitude factor from base integrity
             let amp_factor = base_integrity_factor(wi.z, base_height, mode_code, trans_code);
