@@ -35,21 +35,19 @@ class GCodeGenerator:
         skirt_height: int = 1,
         start_gcode_override: str = "",
         end_gcode_override: str = "",
+        # ── Printer geometry ──────────────────────────────────────────────────
+        bed_x: float = 220.0,
+        bed_y: float = 220.0,
+        max_z: float = 280.0,
+        origin: str = "front_left",     # "front_left" | "center"
+        kinematics: str = "cartesian",  # "cartesian" | "corexy" | "delta"
+        # ── Motion ───────────────────────────────────────────────────────────
+        print_accel: int = 500,
+        travel_accel: int = 1500,
+        z_hop: float = 0.0,
+        # ── First layer ───────────────────────────────────────────────────────
+        first_layer_speed_pct: int = 50,
     ):
-        """
-        Initialize GCode generator.
-
-        Args:
-            nozzle_diameter: Nozzle diameter in mm
-            layer_height: Layer height in mm
-            nozzle_temp: Nozzle temperature in °C
-            bed_temp: Bed temperature in °C
-            print_speed: Print speed in mm/s
-            travel_speed: Travel speed in mm/s
-            fan_speed: Fan speed 0-100
-            filament_diameter: Filament diameter in mm
-                max_volumetric_speed: Maximum volumetric speed in mm³/s
-        """
         self.nozzle_diameter = nozzle_diameter
         self.layer_height = layer_height
         self.nozzle_temp = nozzle_temp
@@ -67,6 +65,15 @@ class GCodeGenerator:
         self.skirt_height = skirt_height
         self.start_gcode_override = start_gcode_override
         self.end_gcode_override = end_gcode_override
+        self.bed_x = bed_x
+        self.bed_y = bed_y
+        self.max_z = max_z
+        self.origin = origin
+        self.kinematics = kinematics
+        self.print_accel = print_accel
+        self.travel_accel = travel_accel
+        self.z_hop = z_hop
+        self.first_layer_speed_pct = first_layer_speed_pct
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -76,7 +83,13 @@ class GCodeGenerator:
         self.gcode_lines: List[str] = []
         self.current_position = Vector3(0, 0, 0)
         self.current_extrusion = 0.0
-        self.build_plate_center = Vector3(110, 110, 0)
+        self._at_z_hop = False   # track whether we've already lifted for z-hop
+
+        # Build-plate center depends on origin convention
+        if origin == "center":
+            self.build_plate_center = Vector3(0, 0, 0)
+        else:  # front_left (default for Cartesian/CoreXY)
+            self.build_plate_center = Vector3(bed_x / 2.0, bed_y / 2.0, 0)
 
     def generate_gcode(
         self,
@@ -242,6 +255,10 @@ class GCodeGenerator:
         self.gcode_lines.append("G90")
         self.gcode_lines.append("M83")
         self.gcode_lines.append("")
+        if self.print_accel > 0 or self.travel_accel > 0:
+            self.gcode_lines.append(f"; Acceleration: print={self.print_accel} mm/s², travel={self.travel_accel} mm/s²")
+            self.gcode_lines.append(f"M204 P{self.print_accel} T{self.travel_accel}")
+            self.gcode_lines.append("")
 
     def _add_new_purge_sequence(
         self,
@@ -263,8 +280,10 @@ class GCodeGenerator:
         self.gcode_lines.append("; --- NEW PURGE SEQUENCE ---")
         self.gcode_lines.append("; After START_PRINT: retract, move to purge, extrude+ooze, retract")
         
-        # Step 1: Move to safe corner (219,219) at Z=2.0
-        safe_corner = Vector3(219.0, 219.0, 2.0)
+        # Step 1: Move to safe corner at Z=2.0 (slightly inside bed limits)
+        sc_x = self.build_plate_center.x + self.bed_x * 0.45 if self.origin != "center" else self.bed_x * 0.45
+        sc_y = self.build_plate_center.y + self.bed_y * 0.45 if self.origin != "center" else self.bed_y * 0.45
+        safe_corner = Vector3(sc_x, sc_y, 2.0)
         self.gcode_lines.append("; Move to safe corner after START_PRINT")
         self._add_move(safe_corner, is_travel=True)
         
@@ -573,11 +592,15 @@ class GCodeGenerator:
             segment_length = segment_vector.magnitude()
 
             if segment_length > 0.001:
-                # Calculate extrusion
                 extrusion = self._calculate_extrusion(segment_length)
-
-                # Move with extrusion
-                self._add_move(target_position, extrusion_amount=extrusion)
+                # Slow down first layer for adhesion
+                if layer_idx == 0:
+                    orig = self.print_speed
+                    self.print_speed = orig * self.first_layer_speed_pct / 100.0
+                    self._add_move(target_position, extrusion_amount=extrusion)
+                    self.print_speed = orig
+                else:
+                    self._add_move(target_position, extrusion_amount=extrusion)
 
         self.gcode_lines.append("")
 
@@ -600,9 +623,17 @@ class GCodeGenerator:
             speed = self.travel_speed
         else:
             speed = self.print_speed
-            # Apply volumetric speed limit
             actual_speed = self._limit_speed_to_volumetric(speed, extrusion_amount)
             speed = min(speed, actual_speed)
+
+        # Z-hop: lift before travel, lower before extrusion
+        if is_travel and self.z_hop > 0 and not self._at_z_hop:
+            hop_z = self.current_position.z + self.z_hop
+            self.gcode_lines.append(f"G1 Z{hop_z:.3f} F{self.travel_speed * 60:.0f}")
+            self._at_z_hop = True
+        elif not is_travel and self._at_z_hop:
+            self.gcode_lines.append(f"G1 Z{target.z:.3f} F{self.travel_speed * 60:.0f}")
+            self._at_z_hop = False
 
         self.current_extrusion += extrusion_amount
 
@@ -632,9 +663,11 @@ class GCodeGenerator:
             self.gcode_lines.append(f"G1 Z{new_z:.3f} F{self.travel_speed * 60:.0f}")
             self.current_position.z = new_z
             self.gcode_lines.append("; Move to safe corner")
-            self.gcode_lines.append(f"G1 X219.000 Y219.000 F{self.travel_speed * 60:.0f}")
-            self.current_position.x = 219.0
-            self.current_position.y = 219.0
+            ec_x = self.build_plate_center.x + self.bed_x * 0.45 if self.origin != "center" else self.bed_x * 0.45
+            ec_y = self.build_plate_center.y + self.bed_y * 0.45 if self.origin != "center" else self.bed_y * 0.45
+            self.gcode_lines.append(f"G1 X{ec_x:.3f} Y{ec_y:.3f} F{self.travel_speed * 60:.0f}")
+            self.current_position.x = ec_x
+            self.current_position.y = ec_y
             self.gcode_lines.append("")
             self.gcode_lines.append("END_PRINT")
 
@@ -675,11 +708,9 @@ class GCodeGenerator:
             model_center_x = (min_x + max_x) / 2.0 if min_x != float('inf') else 0.0
             model_center_y = (min_y + max_y) / 2.0 if min_y != float('inf') else 0.0
 
-        # Plate center is at (110, 110) for 220x220 bed
-        plate_center_x = 110.0
-        plate_center_y = 110.0
+        plate_center_x = self.build_plate_center.x
+        plate_center_y = self.build_plate_center.y
 
-        # Calculate offset to center model on plate
         offset_x = plate_center_x - model_center_x
         offset_y = plate_center_y - model_center_y
 

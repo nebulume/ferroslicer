@@ -134,24 +134,35 @@ class MeshVaseSlicer:
 
         # Generate GCode
         logger.info("Generating GCode...")
+        pr  = merged_config["printer"]
+        ps  = merged_config["print_settings"]
         gcode_gen = GCodeGenerator(
-            nozzle_diameter=merged_config["printer"]["nozzle_diameter"],
-            layer_height=merged_config["print_settings"]["layer_height"],
-            nozzle_temp=merged_config["printer"]["nozzle_temp"],
-            bed_temp=merged_config["printer"]["bed_temp"],
-            print_speed=merged_config["print_settings"]["print_speed"],
-            travel_speed=merged_config["print_settings"]["travel_speed"],
-            fan_speed=merged_config["print_settings"]["fan_speed"],
-            filament_diameter=merged_config["printer"]["filament_diameter"],
-            purge_gap=merged_config.get("print_settings", {}).get("purge_gap", 20.0),
-            purge_length=merged_config.get("print_settings", {}).get("purge_length", 50.0),
-            purge_side=merged_config.get("print_settings", {}).get("purge_side", "left"),
-            max_volumetric_speed=merged_config.get("print_settings", {}).get("max_volumetric_speed", 12.0),
-            skirt_enabled=merged_config.get("print_settings", {}).get("skirt_enabled", True),
-            skirt_distance=merged_config.get("print_settings", {}).get("skirt_distance", 0.0),
-            skirt_height=merged_config.get("print_settings", {}).get("skirt_height", 1),
+            nozzle_diameter=pr["nozzle_diameter"],
+            layer_height=ps["layer_height"],
+            nozzle_temp=pr["nozzle_temp"],
+            bed_temp=pr["bed_temp"],
+            print_speed=ps["print_speed"],
+            travel_speed=ps["travel_speed"],
+            fan_speed=ps["fan_speed"],
+            filament_diameter=pr.get("filament_diameter", 1.75),
+            purge_gap=ps.get("purge_gap", 20.0),
+            purge_length=ps.get("purge_length", 50.0),
+            purge_side=ps.get("purge_side", "left"),
+            max_volumetric_speed=ps.get("max_volumetric_speed", 12.0),
+            skirt_enabled=ps.get("skirt_enabled", True),
+            skirt_distance=ps.get("skirt_distance", 0.0),
+            skirt_height=ps.get("skirt_height", 1),
             start_gcode_override=merged_config.get("custom_gcode", {}).get("start_gcode", ""),
             end_gcode_override=merged_config.get("custom_gcode", {}).get("end_gcode", ""),
+            bed_x=pr.get("bed_x", 220.0),
+            bed_y=pr.get("bed_y", 220.0),
+            max_z=pr.get("max_z", 280.0),
+            origin=pr.get("origin", "front_left"),
+            kinematics=pr.get("kinematics", "cartesian"),
+            print_accel=ps.get("print_accel", 500),
+            travel_accel=ps.get("travel_accel", 1500),
+            z_hop=ps.get("z_hop", 0.0),
+            first_layer_speed_pct=ps.get("first_layer_speed_pct", 50),
         )
 
         # If vase mode (spiral) requested, build continuous spiral path

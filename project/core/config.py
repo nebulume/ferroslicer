@@ -47,17 +47,25 @@ class Config:
             "debug": False,
             "output_dir": "output",
             "printer": {
-                "build_volume": [220, 220, 280],
                 "nozzle_diameter": 1.0,
+                "filament_diameter": 1.75,
                 "nozzle_temp": 260,
                 "bed_temp": 65,
-                "filament_diameter": 1.75
+                "kinematics": "cartesian",
+                "bed_x": 220.0,
+                "bed_y": 220.0,
+                "max_z": 280.0,
+                "origin": "front_left"
             },
             "print_settings": {
                 "layer_height": 0.5,
                 "print_speed": 35,
+                "first_layer_speed_pct": 50,
                 "travel_speed": 40,
                 "fan_speed": 25,
+                "print_accel": 500,
+                "travel_accel": 1500,
+                "z_hop": 0.0,
                 "skirt_enabled": True,
                 "skirt_distance": 0.0,
                 "skirt_height": 1

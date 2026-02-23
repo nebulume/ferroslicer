@@ -36,6 +36,8 @@ class SettingsPanel(QScrollArea):
         self._building = True
 
         self._add_printer_group(layout)
+        self._add_build_volume_group(layout)
+        self._add_motion_group(layout)
         self._add_print_group(layout)
         self._add_mode_group(layout)
         self._add_wave_group(layout)
@@ -50,19 +52,54 @@ class SettingsPanel(QScrollArea):
     def _add_printer_group(self, parent):
         g = QGroupBox("Printer")
         f = QFormLayout(g)
-        self._dbl(f, "nozzle_diameter",   "Nozzle (mm):",    1.0,  0.1, 2.0,  0.1)
-        self._int(f, "nozzle_temp",       "Nozzle temp (°C):",260, 150, 350)
-        self._int(f, "bed_temp",          "Bed temp (°C):",    65,   0, 130)
+        self._dbl(f, "nozzle_diameter",   "Nozzle (mm):",      1.0,  0.1,  2.0,  0.1)
+        self._dbl(f, "filament_diameter", "Filament (mm):",     1.75, 1.0,  3.0,  0.05)
+        self._int(f, "nozzle_temp",       "Nozzle temp (°C):", 260,  150,  400)
+        self._int(f, "bed_temp",          "Bed temp (°C):",      65,    0,  130)
+
+        kin = QComboBox()
+        kin.addItems(["Cartesian", "CoreXY", "Delta"])
+        kin.currentIndexChanged.connect(self._emit)
+        self._widgets["kinematics"] = kin
+        f.addRow("Kinematics:", kin)
+
+        parent.addWidget(g)
+
+    def _add_build_volume_group(self, parent):
+        g = QGroupBox("Build Volume")
+        f = QFormLayout(g)
+        self._int(f, "bed_x",  "Bed X (mm):", 220, 50, 2000)
+        self._int(f, "bed_y",  "Bed Y (mm):", 220, 50, 2000)
+        self._int(f, "max_z",  "Max Z (mm):", 280, 50, 2000)
+
+        orig = QComboBox()
+        orig.addItems([
+            "Front-Left Corner",
+            "Center (delta / RRF)",
+        ])
+        orig.currentIndexChanged.connect(self._emit)
+        self._widgets["origin"] = orig
+        f.addRow("Origin (0,0):", orig)
+
+        parent.addWidget(g)
+
+    def _add_motion_group(self, parent):
+        g = QGroupBox("Motion")
+        f = QFormLayout(g)
+        self._int(f, "print_accel",  "Print accel (mm/s²):",  500,  100, 20000)
+        self._int(f, "travel_accel", "Travel accel (mm/s²):", 1500, 100, 30000)
+        self._dbl(f, "z_hop",        "Z-hop (mm):",            0.0,  0.0,   5.0, 0.1)
         parent.addWidget(g)
 
     def _add_print_group(self, parent):
         g = QGroupBox("Print Settings")
         f = QFormLayout(g)
-        self._dbl(f, "layer_height",      "Layer height (mm):", 0.5, 0.05, 2.0,   0.05)
-        self._int(f, "print_speed",       "Print speed (mm/s):", 35,    5, 300)
-        self._int(f, "travel_speed",      "Travel speed (mm/s):",40,   10, 500)
-        self._int(f, "fan_speed",         "Fan speed (%):",      25,    0, 100)
-        self._dbl(f, "max_volumetric_speed","Max vol. (mm³/s):", 12.0, 0.5, 50.0, 0.5)
+        self._dbl(f, "layer_height",         "Layer height (mm):",   0.5,  0.05, 2.0,   0.05)
+        self._int(f, "print_speed",          "Print speed (mm/s):",   35,     5, 500)
+        self._int(f, "first_layer_speed_pct","First layer speed (%):", 50,    10, 100)
+        self._int(f, "travel_speed",         "Travel speed (mm/s):",   40,    10, 800)
+        self._int(f, "fan_speed",            "Fan speed (%):",          25,     0, 100)
+        self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",     12.0,  0.5, 50.0,  0.5)
         parent.addWidget(g)
 
     def _add_mode_group(self, parent):
@@ -222,24 +259,37 @@ class SettingsPanel(QScrollArea):
             mesh["wave_spacing"] = w["wave_spacing"].value()
 
         print_s = {
-            "layer_height":          w["layer_height"].value(),
-            "print_speed":           w["print_speed"].value(),
-            "travel_speed":          w["travel_speed"].value(),
-            "fan_speed":             w["fan_speed"].value(),
-            "max_volumetric_speed":  w["max_volumetric_speed"].value(),
-            "vase_mode":             is_vase,
-            "skirt_enabled":         w["skirt_enabled"].isChecked(),
-            "skirt_distance":        w["skirt_distance"].value(),
-            "skirt_height":          w["skirt_height"].value(),
+            "layer_height":           w["layer_height"].value(),
+            "print_speed":            w["print_speed"].value(),
+            "first_layer_speed_pct":  w["first_layer_speed_pct"].value(),
+            "travel_speed":           w["travel_speed"].value(),
+            "fan_speed":              w["fan_speed"].value(),
+            "max_volumetric_speed":   w["max_volumetric_speed"].value(),
+            "print_accel":            w["print_accel"].value(),
+            "travel_accel":           w["travel_accel"].value(),
+            "z_hop":                  w["z_hop"].value(),
+            "vase_mode":              is_vase,
+            "skirt_enabled":          w["skirt_enabled"].isChecked(),
+            "skirt_distance":         w["skirt_distance"].value(),
+            "skirt_height":           w["skirt_height"].value(),
         }
         if is_vase:
             print_s["spiral_points_per_degree"] = w["spiral_points_per_degree"].value()
 
+        _ORIGIN_MAP = ["front_left", "center"]
+        _KIN_MAP    = ["cartesian", "corexy", "delta"]
+
         return {
             "printer": {
-                "nozzle_diameter": w["nozzle_diameter"].value(),
-                "nozzle_temp":     w["nozzle_temp"].value(),
-                "bed_temp":        w["bed_temp"].value(),
+                "nozzle_diameter":  w["nozzle_diameter"].value(),
+                "filament_diameter":w["filament_diameter"].value(),
+                "nozzle_temp":      w["nozzle_temp"].value(),
+                "bed_temp":         w["bed_temp"].value(),
+                "kinematics":       _KIN_MAP[w["kinematics"].currentIndex()],
+                "bed_x":            float(w["bed_x"].value()),
+                "bed_y":            float(w["bed_y"].value()),
+                "max_z":            float(w["max_z"].value()),
+                "origin":           _ORIGIN_MAP[w["origin"].currentIndex()],
             },
             "print_settings": print_s,
             "mesh_settings":  mesh,
@@ -269,13 +319,32 @@ class SettingsPanel(QScrollArea):
                         w[key].setCurrentIndex(idx)
 
             _set_dbl("nozzle_diameter",          printer.get("nozzle_diameter"))
+            _set_dbl("filament_diameter",        printer.get("filament_diameter"))
             _set_int("nozzle_temp",              printer.get("nozzle_temp"))
             _set_int("bed_temp",                 printer.get("bed_temp"))
+            _set_int("bed_x",                    printer.get("bed_x"))
+            _set_int("bed_y",                    printer.get("bed_y"))
+            _set_int("max_z",                    printer.get("max_z"))
+
+            _KIN_MAP = {"cartesian": 0, "corexy": 1, "delta": 2}
+            kin_val = printer.get("kinematics", "cartesian")
+            if kin_val in _KIN_MAP:
+                w["kinematics"].setCurrentIndex(_KIN_MAP[kin_val])
+
+            _ORIG_MAP = {"front_left": 0, "center": 1}
+            orig_val = printer.get("origin", "front_left")
+            if orig_val in _ORIG_MAP:
+                w["origin"].setCurrentIndex(_ORIG_MAP[orig_val])
+
             _set_dbl("layer_height",             ps.get("layer_height"))
             _set_int("print_speed",              ps.get("print_speed"))
+            _set_int("first_layer_speed_pct",    ps.get("first_layer_speed_pct"))
             _set_int("travel_speed",             ps.get("travel_speed"))
             _set_int("fan_speed",                ps.get("fan_speed"))
             _set_dbl("max_volumetric_speed",     ps.get("max_volumetric_speed"))
+            _set_int("print_accel",              ps.get("print_accel"))
+            _set_int("travel_accel",             ps.get("travel_accel"))
+            _set_dbl("z_hop",                    ps.get("z_hop"))
             _set_dbl("spiral_points_per_degree", ps.get("spiral_points_per_degree"))
 
             if ps.get("vase_mode"):
