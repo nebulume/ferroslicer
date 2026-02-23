@@ -41,15 +41,24 @@ _VERT = """
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 uniform mat4 uMVP;
-flat out vec3 vColor;
+flat out vec3 vNormal;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    vec3 n = normalize(aNormal);
+    vNormal = normalize(aNormal);
+}
+"""
+
+_FRAG = """
+#version 330 core
+flat in  vec3 vNormal;
+out vec4 fragColor;
+void main() {
+    // Flip normal for back-facing triangles so they light correctly.
+    // This makes STL files with inconsistent winding show as solid rather
+    // than having gaps where back-faced triangles were culled.
+    vec3 n = gl_FrontFacing ? vNormal : -vNormal;
 
     // Three fixed lights in model space — shading never changes on rotation.
-    // Key:  bright upper-right-front  (primary illumination)
-    // Fill: softer opposite side       (lift dark-face visibility)
-    // Rim:  subtle back light          (edge definition / depth)
     vec3 key  = normalize(vec3( 0.55,  0.70,  1.0));
     vec3 fill = normalize(vec3(-0.60, -0.25,  0.55));
     vec3 rim  = normalize(vec3( 0.10,  0.40, -0.85));
@@ -61,22 +70,49 @@ void main() {
     float lit = clamp(0.22 + 0.62*dk + 0.26*df + 0.14*dr, 0.0, 1.0);
 
     // Warm off-white palette — shadows are mid-grey, not near-black
-    vColor = vec3(
-        0.20 + 0.65 * lit,   // R  (0.20 dark → 0.85 bright)
-        0.21 + 0.62 * lit,   // G
-        0.24 + 0.52 * lit    // B  slightly cooler highlight
+    vec3 color = vec3(
+        0.20 + 0.65 * lit,
+        0.21 + 0.62 * lit,
+        0.24 + 0.52 * lit
     );
+    fragColor = vec4(color, 1.0);
 }
 """
 
-_FRAG = """
+
+# ── Box wireframe shaders ─────────────────────────────────────────────────────
+
+_BOX_VERT = """
 #version 330 core
-flat in  vec3 vColor;
-out vec4 fragColor;
-void main() {
-    fragColor = vec4(vColor, 1.0);
-}
+layout(location = 0) in vec3 aPos;
+uniform mat4 uMVP;
+void main() { gl_Position = uMVP * vec4(aPos, 1.0); }
 """
+
+_BOX_FRAG = """
+#version 330 core
+out vec4 fragColor;
+void main() { fragColor = vec4(0.40, 0.55, 0.80, 0.30); }
+"""
+
+
+def _box_edge_verts(x0: float, y0: float, z0: float,
+                    x1: float, y1: float, z1: float) -> np.ndarray:
+    """Return (24, 3) float32 — 12 edges × 2 vertices for GL_LINES."""
+    c = [
+        (x0, y0, z0), (x1, y0, z0), (x0, y1, z0), (x1, y1, z0),
+        (x0, y0, z1), (x1, y0, z1), (x0, y1, z1), (x1, y1, z1),
+    ]
+    edges = [
+        (0, 1), (2, 3), (4, 5), (6, 7),   # parallel to X
+        (0, 2), (1, 3), (4, 6), (5, 7),   # parallel to Y
+        (0, 4), (1, 5), (2, 6), (3, 7),   # parallel to Z
+    ]
+    verts = []
+    for a, b in edges:
+        verts.append(c[a])
+        verts.append(c[b])
+    return np.array(verts, dtype=np.float32)
 
 
 # ── Background STL loader ─────────────────────────────────────────────────────
@@ -155,6 +191,15 @@ class STLViewer(QOpenGLWidget):
         self._vbo:   Optional[QOpenGLBuffer]            = None
         self._mvp_loc: int = -1
 
+        # ── Print volume box ──────────────────────────────────────────────────
+        self._bed_dims: Optional[tuple] = None          # (bed_x, bed_y, max_z) in mm
+        self._box_prog:    Optional[QOpenGLShaderProgram]     = None
+        self._box_vao:     Optional[QOpenGLVertexArrayObject] = None
+        self._box_vbo:     Optional[QOpenGLBuffer]            = None
+        self._box_mvp_loc: int = -1
+        self._pending_box: Optional[np.ndarray] = None  # (24, 3) waiting for GL
+        self._box_n_verts: int = 0
+
         # ── Interaction ───────────────────────────────────────────────────────
         self._last_mouse = None
         self._mouse_button = Qt.MouseButton.NoButton
@@ -188,6 +233,25 @@ class STLViewer(QOpenGLWidget):
             self._vbo.release()
             self.doneCurrent()
         self.update()
+
+    def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
+        """Show a wireframe box representing the printer build volume."""
+        self._bed_dims = (bed_x, bed_y, max_z)
+        self._queue_box()
+        self.update()
+
+    def _queue_box(self) -> None:
+        """Compute box vertices in normalized space from current bed dims."""
+        if self._bed_dims is None:
+            return
+        bed_x, bed_y, max_z = self._bed_dims
+        max_dim = max(bed_x, bed_y, max_z)
+        # Map largest dimension → 1.0; match the STL coord convention:
+        # viewer X = STL X, viewer Y = -STL Z (up), viewer Z = STL Y
+        hx =  bed_x / max_dim
+        hy =  max_z / max_dim   # height axis
+        hz =  bed_y / max_dim   # depth axis
+        self._pending_box = _box_edge_verts(-hx, -hy, -hz, hx, hy, hz)
 
     def reset_view(self) -> None:
         self.rot_x = 25.0
@@ -250,8 +314,9 @@ class STLViewer(QOpenGLWidget):
     def initializeGL(self):
         gl.glClearColor(0.11, 0.11, 0.14, 1.0)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_CULL_FACE)
-        gl.glCullFace(gl.GL_BACK)
+        # No backface culling — the fragment shader handles two-sided lighting
+        # via gl_FrontFacing, so back-facing triangles (inconsistent STL winding)
+        # render correctly instead of disappearing as gaps.
 
         self._prog = QOpenGLShaderProgram(self)
         self._prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _VERT)
@@ -278,10 +343,29 @@ class STLViewer(QOpenGLWidget):
         self._vbo.release()
         self._gl_ready = True
 
+        # ── Box shader ────────────────────────────────────────────────────────
+        self._box_prog = QOpenGLShaderProgram(self)
+        self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _BOX_VERT)
+        self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _BOX_FRAG)
+        self._box_prog.link()
+        self._box_mvp_loc = self._box_prog.uniformLocation("uMVP")
+
+        self._box_vao = QOpenGLVertexArrayObject(self)
+        self._box_vao.create(); self._box_vao.bind()
+        self._box_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._box_vbo.create(); self._box_vbo.bind()
+        self._box_vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        self._box_vao.release(); self._box_vbo.release()
+        # Re-queue if dims were set before GL was ready
+        self._queue_box()
+
     def resizeGL(self, w: int, h: int):
         gl.glViewport(0, 0, w, h)
 
     def paintGL(self):
+        # Upload pending model data
         if self._pending is not None and self._gl_ready:
             data = self._pending
             self._vbo.bind()
@@ -290,18 +374,40 @@ class STLViewer(QOpenGLWidget):
             self._n_tris  = len(data) // 3
             self._pending = None
 
+        # Upload pending box data
+        if self._pending_box is not None and self._gl_ready:
+            self._box_vbo.bind()
+            self._box_vbo.allocate(self._pending_box.tobytes(), self._pending_box.nbytes)
+            self._box_vbo.release()
+            self._box_n_verts = len(self._pending_box)
+            self._pending_box = None
+
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
-        if self._n_tris == 0 or not self._gl_ready:
+        if not self._gl_ready:
             return
 
-        self._prog.bind()
         mvp = self._build_mvp(self.width(), self.height())
-        gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
-        self._vao.bind()
-        gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
-        self._vao.release()
-        self._prog.release()
+
+        # ── Model triangles ────────────────────────────────────────────────
+        if self._n_tris > 0:
+            self._prog.bind()
+            gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
+            self._vao.bind()
+            gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
+            self._vao.release()
+            self._prog.release()
+
+        # ── Print volume box ───────────────────────────────────────────────
+        if self._box_n_verts > 0 and self._box_prog is not None:
+            self._box_prog.bind()
+            gl.glUniformMatrix4fv(self._box_mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            self._box_vao.bind()
+            gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
+            self._box_vao.release()
+            self._box_prog.release()
 
     def paintEvent(self, event):
         super().paintEvent(event)   # triggers paintGL

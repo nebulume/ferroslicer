@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QSlider, QSizePolicy, QPushButton, QInputDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale
 
 SLICER_SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "slicer_settings.json"
 PRESETS_PATH         = Path(__file__).parent.parent.parent / "data" / "presets.json"
@@ -322,6 +322,7 @@ class SettingsPanel(QScrollArea):
 
     def _dbl(self, form, key, label, default, lo, hi, step) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
+        spin.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
         spin.setRange(lo, hi)
         spin.setSingleStep(step)
         spin.setDecimals(len(str(step).split(".")[-1]) if "." in str(step) else 1)

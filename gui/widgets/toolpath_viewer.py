@@ -70,6 +70,42 @@ void main() {
 }
 """
 
+# ── Box wireframe shaders ─────────────────────────────────────────────────────
+
+_BOX_VERT = """
+#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uMVP;
+void main() { gl_Position = uMVP * vec4(aPos, 1.0); }
+"""
+
+_BOX_FRAG = """
+#version 330 core
+out vec4 fragColor;
+void main() { fragColor = vec4(0.40, 0.55, 0.80, 0.30); }
+"""
+
+
+def _box_edge_verts(x0: float, y0: float, z0: float,
+                    x1: float, y1: float, z1: float) -> np.ndarray:
+    """Return (24, 3) float32 — 12 edges × 2 vertices for GL_LINES."""
+    c = [
+        (x0, y0, z0), (x1, y0, z0), (x0, y1, z0), (x1, y1, z0),
+        (x0, y0, z1), (x1, y0, z1), (x0, y1, z1), (x1, y1, z1),
+    ]
+    edges = [
+        (0, 1), (2, 3), (4, 5), (6, 7),   # parallel to X
+        (0, 2), (1, 3), (4, 6), (5, 7),   # parallel to Y
+        (0, 4), (1, 5), (2, 6), (3, 7),   # parallel to Z
+    ]
+    verts = []
+    for a, b in edges:
+        verts.append(c[a])
+        verts.append(c[b])
+    return np.array(verts, dtype=np.float32)
+
+
+
 
 # ── Background GCode parser ───────────────────────────────────────────────────
 
@@ -91,21 +127,13 @@ class GCodeLoaderThread(QThread):
 
     def run(self):
         try:
-            xs, ys, zs     = [], [], []
-            seam_xs = seam_ys = seam_zs = None
-            seam_xs, seam_ys, seam_zs = [], [], []
+            xs, ys, zs = [], [], []
 
             segments: list[tuple[int, int]] = []
-            seg_start   = 0
-            had_travel  = True
-            relative_e  = False
+            seg_start  = 0
+            had_travel = True
+            relative_e = False
             cur_x = cur_y = cur_z = cur_e = 0.0
-
-            # Revolution tracking for seam dots
-            prev_ex = prev_ey = None
-            prev_angle   = None
-            cumul_angle  = 0.0
-            last_rev_ang = 0.0
 
             with open(self.path, "r") as fh:
                 for raw in fh:
@@ -160,33 +188,6 @@ class GCodeLoaderThread(QThread):
                             seg_start  = len(xs)
                             had_travel = False
                         xs.append(nx); ys.append(ny); zs.append(nz)
-
-                        # ── Seam / revolution detection ──────────────────────
-                        # Track cumulative XY angle; every 360° = one revolution
-                        if prev_ex is not None:
-                            dx = nx - prev_ex
-                            dy = ny - prev_ey
-                            if math.hypot(dx, dy) > 0.001:
-                                a = math.atan2(dy, dx)
-                                if prev_angle is not None:
-                                    da = a - prev_angle
-                                    while da >  math.pi: da -= 2 * math.pi
-                                    while da < -math.pi: da += 2 * math.pi
-                                    cumul_angle += da
-                                    # Complete revolution — CW or CCW
-                                    while cumul_angle - last_rev_ang >= 2 * math.pi:
-                                        seam_xs.append(nx)
-                                        seam_ys.append(ny)
-                                        seam_zs.append(nz)
-                                        last_rev_ang += 2 * math.pi
-                                    while cumul_angle - last_rev_ang <= -2 * math.pi:
-                                        seam_xs.append(nx)
-                                        seam_ys.append(ny)
-                                        seam_zs.append(nz)
-                                        last_rev_ang -= 2 * math.pi
-                                prev_angle = a
-                        prev_ex, prev_ey = nx, ny
-
                     elif has_xy:
                         had_travel = True
 
@@ -205,14 +206,54 @@ class GCodeLoaderThread(QThread):
                 np.array(zs, dtype=np.float32),
             ])
 
-            if seam_xs:
-                seam_pts = np.column_stack([
-                    np.array(seam_xs, dtype=np.float32),
-                    np.array(seam_ys, dtype=np.float32),
-                    np.array(seam_zs, dtype=np.float32),
-                ])
-            else:
-                seam_pts = np.empty((0, 3), dtype=np.float32)
+            # ── Seam / revolution detection ───────────────────────────────────
+            # Track the position angle of each point relative to the XY centroid.
+            # The position angle completes exactly 360° per physical revolution
+            # for any shape, so every 2π crossing = one full revolution = seam.
+            #
+            # Critical: reset prev_pa at each segment start (after a travel move)
+            # so that the large position-angle jump from the travel doesn't corrupt
+            # the cumulative angle.  We use the segment list for this.
+            seam_pts = np.empty((0, 3), dtype=np.float32)
+            if len(xs) > 3:
+                cx = float(pts[:, 0].mean())
+                cy = float(pts[:, 1].mean())
+
+                seg_start_set = set(s for s, _ in segments)
+
+                seam_xs: list[float] = []
+                seam_ys: list[float] = []
+                seam_zs: list[float] = []
+                prev_pa    = None
+                cumul_pos  = 0.0
+                last_cross = 0.0
+
+                for i, (x, y, z) in enumerate(zip(xs, ys, zs)):
+                    # Each new segment starts after a travel — reset to avoid
+                    # accumulating the large angular jump over the travel gap.
+                    if i in seg_start_set:
+                        prev_pa = None
+
+                    pa = math.atan2(y - cy, x - cx)
+                    if prev_pa is not None:
+                        da = pa - prev_pa
+                        while da >  math.pi: da -= 2 * math.pi
+                        while da < -math.pi: da += 2 * math.pi
+                        cumul_pos += da
+                        while cumul_pos - last_cross >= 2 * math.pi:
+                            seam_xs.append(x); seam_ys.append(y); seam_zs.append(z)
+                            last_cross += 2 * math.pi
+                        while cumul_pos - last_cross <= -2 * math.pi:
+                            seam_xs.append(x); seam_ys.append(y); seam_zs.append(z)
+                            last_cross -= 2 * math.pi
+                    prev_pa = pa
+
+                if seam_xs:
+                    seam_pts = np.column_stack([
+                        np.array(seam_xs, dtype=np.float32),
+                        np.array(seam_ys, dtype=np.float32),
+                        np.array(seam_zs, dtype=np.float32),
+                    ])
 
             self.loaded.emit(pts, segments, seam_pts)
 
@@ -272,6 +313,17 @@ class _ToolpathGL(QOpenGLWidget):
         self._mouse_btn  = Qt.MouseButton.NoButton
         self._loader: Optional[GCodeLoaderThread] = None
 
+        # ── Print volume box ──────────────────────────────────────────────────
+        self._bed_dims:    Optional[tuple]                    = None
+        self._norm_center: Optional[np.ndarray]               = None
+        self._norm_scale_v: float                             = 1.0
+        self._box_prog:    Optional[QOpenGLShaderProgram]     = None
+        self._box_vao:     Optional[QOpenGLVertexArrayObject] = None
+        self._box_vbo:     Optional[QOpenGLBuffer]            = None
+        self._box_mvp_loc: int                                = -1
+        self._pending_box: Optional[np.ndarray]               = None
+        self._box_n_verts: int                                = 0
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load_gcode(self, path: str) -> None:
@@ -298,7 +350,7 @@ class _ToolpathGL(QOpenGLWidget):
         if self._gl_ready:
             self.makeCurrent()
             for vbo in (self._vbo, self._seam_vbo):
-                if vbo:
+                if vbo is not None:
                     vbo.bind(); vbo.allocate(b"", 0); vbo.release()
             self.doneCurrent()
         self.update()
@@ -308,6 +360,40 @@ class _ToolpathGL(QOpenGLWidget):
         self.zoom = 0.85
         self.pan_x = self.pan_y = 0.0
         self.update()
+
+    def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
+        self._bed_dims = (bed_x, bed_y, max_z)
+        self._queue_box()
+        self.update()
+
+    def _queue_box(self) -> None:
+        """Compute box in normalized toolpath space and queue for GL upload."""
+        if self._bed_dims is None or self._norm_center is None:
+            return
+        bed_x, bed_y, max_z = self._bed_dims
+        # 8 corners of printer volume in printer coords (front-left origin)
+        raw = np.array([
+            [0,     0,     0    ], [bed_x, 0,     0    ],
+            [0,     bed_y, 0    ], [bed_x, bed_y, 0    ],
+            [0,     0,     max_z], [bed_x, 0,     max_z],
+            [0,     bed_y, max_z], [bed_x, bed_y, max_z],
+        ], dtype=np.float32)
+        # Apply same normalization as toolpath points
+        n = (raw - self._norm_center) / self._norm_scale_v
+        # Axis swap: [x, z, y] then flip y  (same as _transform in _on_loaded)
+        n = n[:, [0, 2, 1]].copy()
+        n[:, 1] *= -1.0
+        # Build 24-vertex edge list
+        c = list(n)
+        edges = [
+            (0,1),(2,3),(4,5),(6,7),
+            (0,2),(1,3),(4,6),(5,7),
+            (0,4),(1,5),(2,6),(3,7),
+        ]
+        verts = []
+        for a, b in edges:
+            verts.append(c[a]); verts.append(c[b])
+        self._pending_box = np.array(verts, dtype=np.float32)
 
     # ── Background thread slots ───────────────────────────────────────────────
 
@@ -324,6 +410,9 @@ class _ToolpathGL(QOpenGLWidget):
         center  = (mn + mx) * 0.5
         scale_v = float(np.abs(pts - center).max())
         if scale_v < 1e-9: scale_v = 1.0
+
+        self._norm_center   = center
+        self._norm_scale_v  = scale_v
 
         def _transform(p):
             p = (p - center) / scale_v
@@ -359,6 +448,7 @@ class _ToolpathGL(QOpenGLWidget):
         else:
             self._pending_seam = np.empty((0, 6), dtype=np.float32)
 
+        self._queue_box()
         self.reset_view()
 
     @pyqtSlot(str)
@@ -401,6 +491,23 @@ class _ToolpathGL(QOpenGLWidget):
 
         self._vao,      self._vbo      = self._make_vao_vbo()
         self._seam_vao, self._seam_vbo = self._make_vao_vbo()
+
+        # ── Box shader ──────────────────────────────────────────────────────
+        self._box_prog = QOpenGLShaderProgram(self)
+        self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _BOX_VERT)
+        self._box_prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _BOX_FRAG)
+        self._box_prog.link()
+        self._box_mvp_loc = self._box_prog.uniformLocation("uMVP")
+
+        self._box_vao = QOpenGLVertexArrayObject(self)
+        self._box_vao.create(); self._box_vao.bind()
+        self._box_vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self._box_vbo.create(); self._box_vbo.bind()
+        self._box_vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, 12, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        self._box_vao.release(); self._box_vbo.release()
+
         self._gl_ready = True
 
     def resizeGL(self, w: int, h: int):
@@ -429,31 +536,49 @@ class _ToolpathGL(QOpenGLWidget):
 
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-        if self._n_verts < 2 or not self._gl_ready or not self._segments:
+        if not self._gl_ready:
             return
 
-        self._prog.bind()
         mvp = self._build_mvp(self.width(), self.height())
-        gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
-        gl.glUniform1f(self._z_lo_loc, self._z_lo)
-        gl.glUniform1f(self._z_hi_loc, self._z_hi)
 
-        # ── Toolpath lines ────────────────────────────────────────────────────
-        self._vao.bind()
-        for start, count in self._segments:
-            if count >= 2:
-                gl.glDrawArrays(gl.GL_LINE_STRIP, start, count)
-        self._vao.release()
+        # ── Toolpath lines + seam markers ────────────────────────────────────
+        if self._n_verts >= 2 and self._segments:
+            self._prog.bind()
+            gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
+            gl.glUniform1f(self._z_lo_loc, self._z_lo)
+            gl.glUniform1f(self._z_hi_loc, self._z_hi)
 
-        # ── Seam marker dots ──────────────────────────────────────────────────
-        if self._show_seams and self._seam_n_verts > 0:
-            gl.glPointSize(7.0)
-            self._seam_vao.bind()
-            gl.glDrawArrays(gl.GL_POINTS, 0, self._seam_n_verts)
-            self._seam_vao.release()
-            gl.glPointSize(1.0)
+            self._vao.bind()
+            for start, count in self._segments:
+                if count >= 2:
+                    gl.glDrawArrays(gl.GL_LINE_STRIP, start, count)
+            self._vao.release()
 
-        self._prog.release()
+            # ── Seam marker dots ──────────────────────────────────────────────
+            if self._show_seams and self._seam_n_verts > 0:
+                gl.glPointSize(7.0)
+                self._seam_vao.bind()
+                gl.glDrawArrays(gl.GL_POINTS, 0, self._seam_n_verts)
+                self._seam_vao.release()
+                gl.glPointSize(1.0)
+
+            self._prog.release()
+
+        # ── Print volume box ──────────────────────────────────────────────────
+        if self._pending_box is not None:
+            self._box_vbo.bind()
+            self._box_vbo.allocate(self._pending_box.tobytes(), self._pending_box.nbytes)
+            self._box_vbo.release()
+            self._box_n_verts = len(self._pending_box)
+            self._pending_box = None
+
+        if self._box_n_verts > 0 and self._box_prog is not None:
+            self._box_prog.bind()
+            gl.glUniformMatrix4fv(self._box_mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
+            self._box_vao.bind()
+            gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
+            self._box_vao.release()
+            self._box_prog.release()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -659,3 +784,6 @@ class ToolpathViewer(QWidget):
     def clear(self) -> None:
         self._reset_range()
         self._gl.clear()
+
+    def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
+        self._gl.set_print_volume(bed_x, bed_y, max_z)

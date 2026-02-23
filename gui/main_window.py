@@ -360,6 +360,9 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_file_lbl, stretch=1)
         self.status_bar.addPermanentWidget(self.status_klipper_lbl)
 
+        # Apply initial print volume to both viewers
+        self._on_settings_changed()
+
     def _build_menu(self):
         menubar = self.menuBar()
 
@@ -614,7 +617,13 @@ class MainWindow(QMainWindow):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _on_settings_changed(self):
-        pass
+        cfg = self.settings_panel.get_config_overrides()
+        p = cfg.get("printer", {})
+        bed_x = float(p.get("bed_x", 220))
+        bed_y = float(p.get("bed_y", 220))
+        max_z = float(p.get("max_z", 280))
+        self.stl_viewer.set_print_volume(bed_x, bed_y, max_z)
+        self.toolpath_viewer.set_print_volume(bed_x, bed_y, max_z)
 
     def _update_controls(self):
         has_file  = bool(self._stl_path)
