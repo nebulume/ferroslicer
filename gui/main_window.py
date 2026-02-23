@@ -5,17 +5,19 @@ Layout (horizontal splitter):
   LEFT  : Settings panel (always visible, scrollable)
   RIGHT : Vertical splitter
            TOP    : QTabWidget
-                     Tab 0 "Model"     — STL 3D viewer
-                     Tab 1 "Generated" — toolpath 3D viewer
+                     Tab 0 "Files"     — file browser (default on open)
+                     Tab 1 "Model"     — STL 3D viewer
+                     Tab 2 "Generated" — toolpath 3D viewer
            BOTTOM : Log / progress panel
 
-Bottom toolbar: Load STL | App Settings | Generate GCode | Send to Printer
+Bottom toolbar: Load STL | App Settings | GCode Library | … | Generate | 📁 Reveal | Send
 Status bar: file path | Klipper status
 """
 
 import json
 import logging
 import subprocess
+import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -23,15 +25,18 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QProgressBar, QFileDialog, QStatusBar,
     QMessageBox, QTabWidget, QFrame, QTextEdit,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QObject
-from PyQt6.QtGui import QAction, QFont, QKeySequence, QColor, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, pyqtSlot, pyqtSignal, QObject, QPoint
+from PyQt6.QtGui import (
+    QAction, QFont, QKeySequence, QColor, QTextCursor,
+    QDrag, QPixmap, QPainter,
+)
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gui.widgets.stl_viewer      import STLViewer
 from gui.widgets.toolpath_viewer import ToolpathViewer
 from gui.widgets.settings_panel  import SettingsPanel
+from gui.widgets.file_browser    import FileBrowserWidget
 from gui.workers.slicer_worker   import SlicerWorker
 from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings
 from gui.dialogs.print_history   import PrintHistoryDialog
@@ -42,41 +47,127 @@ import db.print_db as pdb
 # ── Qt-safe logging bridge ────────────────────────────────────────────────────
 
 class _LogSignaller(QObject):
-    """Emits log records as Qt signals (thread-safe bridge to the UI)."""
-    record = pyqtSignal(str, str)  # (level, message)
+    record = pyqtSignal(str, str)
 
 
 class _QtLogHandler(logging.Handler):
-    """Logging handler that routes records to a Qt signal."""
-
     def __init__(self):
         super().__init__()
         self.signaller = _LogSignaller()
 
     def emit(self, record: logging.LogRecord):
-        level = record.levelname
-        msg   = self.format(record)
         try:
-            self.signaller.record.emit(level, msg)
+            self.signaller.record.emit(record.levelname, self.format(record))
         except Exception:
             pass
 
 
+# ── Draggable GCode chip ──────────────────────────────────────────────────────
+
+class _GCodeChip(QLabel):
+    """
+    A small label that displays the last generated GCode filename.
+    • Drag it to any Finder window, Desktop, or USB drive to copy the file.
+    • Double-click to reveal the file in Finder / file manager.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._path: str = ""
+        self._drag_start: QPoint = QPoint()
+        self._set_empty()
+        self.setFixedHeight(28)
+        self.setMinimumWidth(80)
+        self.setMaximumWidth(260)
+        self.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.setStyleSheet(
+            "QLabel { color: #99b; font-size: 11px; padding: 0 6px;"
+            " border: 1px solid #2a3040; border-radius: 4px;"
+            " background: #13151d; }"
+        )
+
+    def set_path(self, path: str):
+        self._path = path
+        name = Path(path).name
+        display = name if len(name) <= 32 else name[:29] + "…"
+        self.setText(f"↗ {display}")
+        self.setToolTip(f"Drag to copy  •  double-click to reveal\n{path}")
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def clear_path(self):
+        self._path = ""
+        self._set_empty()
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _set_empty(self):
+        self.setText("no GCode yet")
+        self.setToolTip("")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if not self._path:
+            return
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if (event.position().toPoint() - self._drag_start).manhattanLength() < 8:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(self._path)])
+        drag.setMimeData(mime)
+        # Small pixmap as drag icon
+        pix = QPixmap(160, 22)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setFont(QFont("Helvetica", 10))
+        p.setPen(QColor(180, 190, 220))
+        p.drawText(4, 16, f"📄 {Path(self._path).name[:24]}")
+        p.end()
+        drag.setPixmap(pix)
+        drag.exec(Qt.DropAction.CopyAction)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._path and Path(self._path).exists():
+            _reveal_file(self._path)
+
+
+def _reveal_file(path: str):
+    """Open the parent folder with the file selected (cross-platform)."""
+    p = Path(path)
+    if not p.exists():
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(p)])
+    elif sys.platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", str(p.parent)])
+    else:
+        subprocess.Popen(["explorer", f"/select,{p}"])
+
+
+# ── Main window ───────────────────────────────────────────────────────────────
+
 class MainWindow(QMainWindow):
+    # Tab indices
+    TAB_FILES     = 0
+    TAB_MODEL     = 1
+    TAB_GENERATED = 2
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MeshyGen — Mesh Vase Slicer")
         self.resize(1280, 860)
 
-        self._stl_path: str = ""
-        self._gcode_path: str = ""
+        self._stl_path:    str = ""
+        self._gcode_path:  str = ""
         self._app_settings: dict = load_app_settings()
         self._slicer_worker: SlicerWorker = None
         self._klipper_timer = QTimer(self)
         self._klipper_timer.setInterval(5000)
         self._klipper_timer.timeout.connect(self._poll_klipper)
 
-        # Logging bridge
         self._log_handler = _QtLogHandler()
         self._log_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
         self._log_handler.signaller.record.connect(self._append_log)
@@ -96,21 +187,20 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── Main splitter (settings | viewer) ────────────────────────────────
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(main_splitter, stretch=1)
 
-        # LEFT: settings panel (always visible)
+        # LEFT: settings panel
         self.settings_panel = SettingsPanel()
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
         main_splitter.addWidget(self.settings_panel)
 
-        # RIGHT: vertical splitter (tabs top, log bottom)
+        # RIGHT: vertical splitter
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         main_splitter.addWidget(right_splitter)
         main_splitter.setSizes([290, 990])
 
-        # ── Preview tab widget ────────────────────────────────────────────────
+        # ── Preview tabs ──────────────────────────────────────────────────────
         self.preview_tabs = QTabWidget()
         self.preview_tabs.setTabPosition(QTabWidget.TabPosition.North)
         self.preview_tabs.setStyleSheet("""
@@ -130,14 +220,23 @@ class MainWindow(QMainWindow):
         """)
         right_splitter.addWidget(self.preview_tabs)
 
-        # Tab 0: Model — STL viewer
+        # Tab 0: Files — file browser (shown on startup)
+        self.file_browser = FileBrowserWidget()
+        self.file_browser.file_hovered.connect(self._on_file_hovered)
+        self.file_browser.file_opened.connect(self._load_stl)
+        self.preview_tabs.addTab(self.file_browser, "  Files  ")
+
+        # Tab 1: Model — STL viewer
         self.stl_viewer = STLViewer()
         self.stl_viewer.file_dropped.connect(self._load_stl)
         self.preview_tabs.addTab(self.stl_viewer, "  Model  ")
 
-        # Tab 1: Generated — toolpath viewer
+        # Tab 2: Generated — toolpath viewer
         self.toolpath_viewer = ToolpathViewer()
         self.preview_tabs.addTab(self.toolpath_viewer, "  Generated  ")
+
+        # Start on the Files tab
+        self.preview_tabs.setCurrentIndex(self.TAB_FILES)
 
         # ── Log panel ─────────────────────────────────────────────────────────
         log_container = QWidget()
@@ -161,8 +260,8 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet(
-            "QTextEdit { background: #0e0f14; color: #8da; border: 1px solid #2a2d3a; "
-            "border-radius: 3px; font-family: Menlo, Monaco, monospace; font-size: 11px; }"
+            "QTextEdit { background: #0e0f14; color: #8da; border: 1px solid #2a2d3a;"
+            " border-radius: 3px; font-family: Menlo, Monaco, monospace; font-size: 11px; }"
         )
         log_layout.addWidget(self.log_text)
 
@@ -183,14 +282,12 @@ class MainWindow(QMainWindow):
 
         self.settings_btn = QPushButton("⚙ App Settings")
         self.settings_btn.setFixedHeight(36)
-        self.settings_btn.setToolTip(
-            "Edit printer settings, start/end GCode templates, output directory"
-        )
+        self.settings_btn.setToolTip("Edit printer settings, start/end GCode templates, output dir")
         self.settings_btn.clicked.connect(self._open_settings)
 
         self.library_btn = QPushButton("◫  GCode Library")
         self.library_btn.setFixedHeight(36)
-        self.library_btn.setToolTip("Browse all generated GCode files with toolpath preview (Ctrl+L)")
+        self.library_btn.setToolTip("Browse generated GCode files (Ctrl+L)")
         self.library_btn.clicked.connect(self._open_library)
         self.library_btn.setStyleSheet(
             "QPushButton { background: #2a3a52; color: #ccd; border-radius: 4px; }"
@@ -207,6 +304,16 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled { background: #333; color: #666; }"
         )
 
+        # GCode chip — draggable filename, double-click reveals in Finder
+        self._gcode_chip = _GCodeChip()
+
+        # Reveal button — opens parent folder with file selected
+        self.reveal_btn = QPushButton("📁")
+        self.reveal_btn.setFixedSize(36, 36)
+        self.reveal_btn.setToolTip("Show GCode in Finder / file manager")
+        self.reveal_btn.setEnabled(False)
+        self.reveal_btn.clicked.connect(self._reveal_gcode)
+
         self.send_btn = QPushButton("◆  Send to Printer")
         self.send_btn.setFixedHeight(36)
         self.send_btn.setEnabled(False)
@@ -219,7 +326,7 @@ class MainWindow(QMainWindow):
 
         self.progress_label = QLabel("")
         self.progress_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        self.progress_label.setMinimumWidth(200)
+        self.progress_label.setMinimumWidth(160)
 
         tb_layout.addWidget(self.load_btn)
         tb_layout.addWidget(self.settings_btn)
@@ -227,6 +334,8 @@ class MainWindow(QMainWindow):
         tb_layout.addStretch()
         tb_layout.addWidget(self.progress_label)
         tb_layout.addWidget(self.generate_btn)
+        tb_layout.addWidget(self._gcode_chip)
+        tb_layout.addWidget(self.reveal_btn)
         tb_layout.addWidget(self.send_btn)
 
         self.progress_bar = QProgressBar()
@@ -289,25 +398,31 @@ class MainWindow(QMainWindow):
             self._load_stl(path)
 
     def _load_stl(self, path: str):
-        self._stl_path = path
+        self._stl_path  = path
         self._gcode_path = ""
         self.toolpath_viewer.clear()
         self.stl_viewer.load_stl(path)
-        self.preview_tabs.setCurrentIndex(0)   # switch to Model tab
+        self.preview_tabs.setCurrentIndex(self.TAB_MODEL)
         self.status_file_lbl.setText(Path(path).name)
+        # Navigate file browser to parent dir so the file is visible
+        self.file_browser.navigate_to(str(Path(path).parent))
         self._update_controls()
         self._append_log("INFO", f"Loaded {Path(path).name}")
+
+    def _on_file_hovered(self, path: str):
+        """Single-click in file browser: preview in Model tab without switching."""
+        self.stl_viewer.load_stl(path)
+        self._stl_path = path
+        self.status_file_lbl.setText(f"Preview: {Path(path).name}")
+        self._update_controls()
 
     # ── Log panel ─────────────────────────────────────────────────────────────
 
     @pyqtSlot(str, str)
     def _append_log(self, level: str, msg: str):
         colors = {
-            "DEBUG":    "#557",
-            "INFO":     "#8da",
-            "WARNING":  "#da8",
-            "ERROR":    "#e74",
-            "CRITICAL": "#f44",
+            "DEBUG": "#557", "INFO": "#8da", "WARNING": "#da8",
+            "ERROR": "#e74", "CRITICAL": "#f44",
         }
         color = colors.get(level, "#8da")
         self.log_text.append(f'<span style="color:{color};">{msg}</span>')
@@ -328,7 +443,6 @@ class MainWindow(QMainWindow):
 
         overrides = self.settings_panel.get_config_overrides()
         settings  = self._app_settings
-
         custom_gcode = {
             "start_gcode": settings.get("start_gcode", ""),
             "end_gcode":   settings.get("end_gcode",   ""),
@@ -379,15 +493,15 @@ class MainWindow(QMainWindow):
         self._set_progress(100, "Done!")
         self.generate_btn.setEnabled(True)
         self.send_btn.setEnabled(True)
+        self.reveal_btn.setEnabled(True)
+        self._gcode_chip.set_path(gcode_path)
         self.status_file_lbl.setText(f"Generated: {Path(gcode_path).name}")
         self._append_log("INFO", f"GCode saved: {Path(gcode_path).name}")
 
-        # Save to print history
         overrides = self.settings_panel.get_config_overrides()
         ip = self._app_settings.get("printer_ip", "")
         pdb.add_job(self._stl_path, gcode_path, overrides, printer_ip=ip)
 
-        # Auto-generate toolpath preview and switch to Generated tab
         QTimer.singleShot(300, self._start_toolpath_preview)
 
     @pyqtSlot(str)
@@ -401,14 +515,13 @@ class MainWindow(QMainWindow):
     # ── Toolpath preview ─────────────────────────────────────────────────────
 
     def _start_toolpath_preview(self):
-        """Parse the generated GCode file and display the actual toolpath."""
         if not self._gcode_path:
             return
         self._append_log("INFO", "Loading toolpath from GCode…")
-        self.preview_tabs.setCurrentIndex(1)          # switch to Generated tab
+        self.preview_tabs.setCurrentIndex(self.TAB_GENERATED)
         self.toolpath_viewer.load_gcode(self._gcode_path)
 
-    # ── Klipper integration ───────────────────────────────────────────────────
+    # ── Klipper ───────────────────────────────────────────────────────────────
 
     def _send_to_printer(self):
         if not self._gcode_path:
@@ -424,19 +537,19 @@ class MainWindow(QMainWindow):
         if not client.check_connection():
             QMessageBox.warning(
                 self, "Not Connected",
-                f"Cannot reach {ip}:{port}.\nCheck IP in App Settings (⚙ App Settings button)."
+                f"Cannot reach {ip}:{port}.\nCheck IP in App Settings."
             )
             return
 
         self._set_progress(0, f"Uploading to {ip}…")
         filename = client.upload_file(self._gcode_path)
         if not filename:
-            QMessageBox.critical(self, "Upload Failed", "File upload failed. Check Moonraker logs.")
+            QMessageBox.critical(self, "Upload Failed", "File upload failed.")
             self._set_progress(0, "")
             return
 
         jobs = pdb.get_all_jobs()
-        if jobs and Path(jobs[0].get("gcode_file", "")).name == Path(self._gcode_path).name:
+        if jobs and Path(jobs[0].get("gcode_file","")).name == Path(self._gcode_path).name:
             pdb.update_status(jobs[0]["id"], "sent")
 
         reply = QMessageBox.question(
@@ -451,7 +564,7 @@ class MainWindow(QMainWindow):
                 if jobs:
                     pdb.update_status(jobs[0]["id"], "printing")
             else:
-                QMessageBox.warning(self, "Start Failed", "Could not start print. Check Klipper.")
+                QMessageBox.warning(self, "Start Failed", "Could not start print.")
         else:
             self._set_progress(0, f"Uploaded to {ip} — ready to print")
 
@@ -493,18 +606,22 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _reveal_gcode(self):
-        if self._gcode_path and Path(self._gcode_path).exists():
-            subprocess.Popen(["open", "-R", self._gcode_path])
+        if self._gcode_path:
+            _reveal_file(self._gcode_path)
+        elif self._stl_path:
+            _reveal_file(self._stl_path)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _on_settings_changed(self):
-        pass  # Could auto-preview here in the future
+        pass
 
     def _update_controls(self):
-        has_file = bool(self._stl_path)
+        has_file  = bool(self._stl_path)
+        has_gcode = bool(self._gcode_path)
         self.generate_btn.setEnabled(has_file)
-        self.send_btn.setEnabled(bool(self._gcode_path))
+        self.send_btn.setEnabled(has_gcode)
+        self.reveal_btn.setEnabled(has_gcode or has_file)
 
     def _set_progress(self, pct: int, msg: str):
         self.progress_bar.setValue(pct)
