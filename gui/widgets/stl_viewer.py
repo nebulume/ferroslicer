@@ -41,16 +41,30 @@ _VERT = """
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 uniform mat4 uMVP;
-uniform vec3 uLight;   // fixed in model space — shading doesn't change on rotate
 flat out vec3 vColor;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    float d     = max(dot(normalize(aNormal), uLight), 0.0);
-    float lit   = 0.12 + 0.88 * d;
+    vec3 n = normalize(aNormal);
+
+    // Three fixed lights in model space — shading never changes on rotation.
+    // Key:  bright upper-right-front  (primary illumination)
+    // Fill: softer opposite side       (lift dark-face visibility)
+    // Rim:  subtle back light          (edge definition / depth)
+    vec3 key  = normalize(vec3( 0.55,  0.70,  1.0));
+    vec3 fill = normalize(vec3(-0.60, -0.25,  0.55));
+    vec3 rim  = normalize(vec3( 0.10,  0.40, -0.85));
+
+    float dk = max(dot(n, key),  0.0);
+    float df = max(dot(n, fill), 0.0);
+    float dr = max(dot(n, rim),  0.0);
+
+    float lit = clamp(0.22 + 0.62*dk + 0.26*df + 0.14*dr, 0.0, 1.0);
+
+    // Warm off-white palette — shadows are mid-grey, not near-black
     vColor = vec3(
-        0.15 + 0.63 * lit,
-        0.17 + 0.59 * lit,
-        0.25 + 0.51 * lit
+        0.20 + 0.65 * lit,   // R  (0.20 dark → 0.85 bright)
+        0.21 + 0.62 * lit,   // G
+        0.24 + 0.52 * lit    // B  slightly cooler highlight
     );
 }
 """
@@ -139,12 +153,7 @@ class STLViewer(QOpenGLWidget):
         self._prog:  Optional[QOpenGLShaderProgram]     = None
         self._vao:   Optional[QOpenGLVertexArrayObject] = None
         self._vbo:   Optional[QOpenGLBuffer]            = None
-        self._mvp_loc:   int = -1
-        self._light_loc: int = -1
-
-        # Fixed light direction in model space (shading constant through rotations)
-        _l = np.array([0.6, 0.8, 1.0], dtype=np.float32)
-        self._light = (_l / np.linalg.norm(_l)).tolist()
+        self._mvp_loc: int = -1
 
         # ── Interaction ───────────────────────────────────────────────────────
         self._last_mouse = None
@@ -248,8 +257,7 @@ class STLViewer(QOpenGLWidget):
         self._prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _VERT)
         self._prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _FRAG)
         self._prog.link()
-        self._mvp_loc   = self._prog.uniformLocation("uMVP")
-        self._light_loc = self._prog.uniformLocation("uLight")
+        self._mvp_loc = self._prog.uniformLocation("uMVP")
 
         self._vao = QOpenGLVertexArrayObject(self)
         self._vao.create()
@@ -290,7 +298,6 @@ class STLViewer(QOpenGLWidget):
         self._prog.bind()
         mvp = self._build_mvp(self.width(), self.height())
         gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
-        gl.glUniform3f(self._light_loc, *self._light)
         self._vao.bind()
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
         self._vao.release()

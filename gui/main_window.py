@@ -35,6 +35,7 @@ from gui.widgets.settings_panel  import SettingsPanel
 from gui.workers.slicer_worker   import SlicerWorker
 from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings
 from gui.dialogs.print_history   import PrintHistoryDialog
+from gui.dialogs.gcode_library   import GCodeLibraryDialog
 import db.print_db as pdb
 
 
@@ -187,6 +188,15 @@ class MainWindow(QMainWindow):
         )
         self.settings_btn.clicked.connect(self._open_settings)
 
+        self.library_btn = QPushButton("◫  GCode Library")
+        self.library_btn.setFixedHeight(36)
+        self.library_btn.setToolTip("Browse all generated GCode files with toolpath preview (Ctrl+L)")
+        self.library_btn.clicked.connect(self._open_library)
+        self.library_btn.setStyleSheet(
+            "QPushButton { background: #2a3a52; color: #ccd; border-radius: 4px; }"
+            "QPushButton:hover { background: #354a66; }"
+        )
+
         self.generate_btn = QPushButton("▶  Generate GCode")
         self.generate_btn.setFixedHeight(36)
         self.generate_btn.setEnabled(False)
@@ -213,6 +223,7 @@ class MainWindow(QMainWindow):
 
         tb_layout.addWidget(self.load_btn)
         tb_layout.addWidget(self.settings_btn)
+        tb_layout.addWidget(self.library_btn)
         tb_layout.addStretch()
         tb_layout.addWidget(self.progress_label)
         tb_layout.addWidget(self.generate_btn)
@@ -260,6 +271,10 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(prefs_act)
 
         history_menu = menubar.addMenu("&History")
+        lib_act = QAction("GCode Library…", self)
+        lib_act.setShortcut(QKeySequence("Ctrl+L"))
+        lib_act.triggered.connect(self._open_library)
+        history_menu.addAction(lib_act)
         hist_act = QAction("Print History…", self)
         hist_act.triggered.connect(self._open_history)
         history_menu.addAction(hist_act)
@@ -467,6 +482,11 @@ class MainWindow(QMainWindow):
         dlg = AppSettingsDialog(self)
         if dlg.exec():
             self._app_settings = load_app_settings()
+
+    def _open_library(self):
+        dlg = GCodeLibraryDialog(self)
+        dlg.settings_loaded.connect(self.settings_panel.load_config)
+        dlg.exec()
 
     def _open_history(self):
         dlg = PrintHistoryDialog(self)

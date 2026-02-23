@@ -9,11 +9,12 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
-    QSlider, QSizePolicy,
+    QSlider, QSizePolicy, QPushButton, QInputDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 SLICER_SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "slicer_settings.json"
+PRESETS_PATH         = Path(__file__).parent.parent.parent / "data" / "presets.json"
 
 
 class SettingsPanel(QScrollArea):
@@ -46,6 +47,7 @@ class SettingsPanel(QScrollArea):
         self._save_timer.setInterval(500)
         self._save_timer.timeout.connect(self._save_to_disk)
 
+        self._add_presets_bar(layout)
         self._add_printer_group(layout)
         self._add_build_volume_group(layout)
         self._add_motion_group(layout)
@@ -60,6 +62,120 @@ class SettingsPanel(QScrollArea):
 
         # Restore last session's values (silently ignore if file missing/corrupt)
         self._load_from_disk()
+
+    # ── Presets bar ──────────────────────────────────────────────────────────
+
+    def _add_presets_bar(self, parent):
+        """Compact preset selector strip at the top of the panel."""
+        bar = QWidget()
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(0, 0, 0, 4)
+        h.setSpacing(4)
+
+        lbl = QLabel("Preset:")
+        lbl.setStyleSheet("color: #889; font-size: 11px;")
+        h.addWidget(lbl)
+
+        self._preset_combo = QComboBox()
+        self._preset_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._preset_combo.setMaximumHeight(26)
+        h.addWidget(self._preset_combo)
+
+        save_btn = QPushButton("Save…")
+        save_btn.setFixedWidth(52)
+        save_btn.setMaximumHeight(26)
+        save_btn.setStyleSheet("font-size: 11px; padding: 0 4px;")
+        save_btn.setToolTip("Save current settings as a named preset")
+        save_btn.clicked.connect(self._save_preset)
+        h.addWidget(save_btn)
+
+        del_btn = QPushButton("Del")
+        del_btn.setFixedWidth(34)
+        del_btn.setMaximumHeight(26)
+        del_btn.setStyleSheet("font-size: 11px; padding: 0 2px; color: #c66;")
+        del_btn.setToolTip("Delete selected preset")
+        del_btn.clicked.connect(self._delete_preset)
+        h.addWidget(del_btn)
+
+        parent.addWidget(bar)
+
+        # Connect after widgets exist so blockSignals works cleanly
+        self._preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+        self._load_presets()
+
+    def _load_presets(self):
+        """Populate preset combo from presets.json."""
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        self._preset_combo.addItem("(no preset)")
+        if PRESETS_PATH.exists():
+            try:
+                data = json.loads(PRESETS_PATH.read_text())
+                for name in data:
+                    self._preset_combo.addItem(name)
+            except Exception:
+                pass
+        self._preset_combo.blockSignals(False)
+
+    def _on_preset_selected(self, idx):
+        """Load the selected preset into all widgets."""
+        if self._building or idx <= 0:
+            return
+        name = self._preset_combo.currentText()
+        if not PRESETS_PATH.exists():
+            return
+        try:
+            data = json.loads(PRESETS_PATH.read_text())
+            cfg = data.get(name)
+            if cfg:
+                self.load_config(cfg)
+        except Exception:
+            pass
+
+    def _save_preset(self):
+        """Prompt for a name and save current settings as a preset."""
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        data = {}
+        if PRESETS_PATH.exists():
+            try:
+                data = json.loads(PRESETS_PATH.read_text())
+            except Exception:
+                pass
+        data[name] = self.get_config_overrides()
+        PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PRESETS_PATH.write_text(json.dumps(data, indent=2))
+        self._load_presets()
+        idx = self._preset_combo.findText(name)
+        if idx >= 0:
+            self._preset_combo.blockSignals(True)
+            self._preset_combo.setCurrentIndex(idx)
+            self._preset_combo.blockSignals(False)
+
+    def _delete_preset(self):
+        """Delete the currently selected preset."""
+        idx = self._preset_combo.currentIndex()
+        if idx <= 0:
+            return
+        name = self._preset_combo.currentText()
+        reply = QMessageBox.question(
+            self, "Delete Preset",
+            f"Delete preset '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if not PRESETS_PATH.exists():
+            return
+        try:
+            data = json.loads(PRESETS_PATH.read_text())
+            data.pop(name, None)
+            PRESETS_PATH.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
+        self._load_presets()
 
     # ── Group builders ───────────────────────────────────────────────────────
 

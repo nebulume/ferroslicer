@@ -8,6 +8,10 @@ points in <1 ms, so no subsampling is needed and interaction is silky.
 Travel moves (non-extrusion G0/G1 with XY movement) break the LINE_STRIP so
 no spurious diagonal lines appear between print segments.
 
+A Z-range filter bar at the bottom lets the user isolate any height slice of
+the print (e.g. a few full revolutions) via two percentage sliders.  The
+clipping is done in the fragment shader (discard) — no VBO rebuild needed.
+
 Color gradient: blue at bed level → orange at the top of the print.
 
 Interaction (same as STL viewer):
@@ -34,7 +38,10 @@ from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLVertexArrayObject,
 )
 from PyQt6.QtGui import QSurfaceFormat, QPainter, QColor, QFont, QLinearGradient
-from PyQt6.QtWidgets import QSizePolicy
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QSlider, QLabel, QPushButton,
+    QSizePolicy,
+)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 
 
@@ -45,18 +52,25 @@ _VERT = """
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aColor;
 uniform mat4 uMVP;
-out vec3 vColor;
+out vec3  vColor;
+out float vZ;       // normalized print-height: -1 = bed, +1 = top
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    vColor      = aColor;
+    vColor = aColor;
+    // stored aPos.y = -(normalized_z), so -y recovers the height fraction
+    vZ = -aPos.y;
 }
 """
 
 _FRAG = """
 #version 330 core
-in  vec3 vColor;
-out vec4 fragColor;
+in  vec3  vColor;
+in  float vZ;
+out vec4  fragColor;
+uniform float uZLo;   // discard fragments below this height (-1 .. +1)
+uniform float uZHi;   // discard fragments above this height (-1 .. +1)
 void main() {
+    if (vZ < uZLo || vZ > uZHi) discard;
     fragColor = vec4(vColor, 0.92);
 }
 """
@@ -187,16 +201,15 @@ class GCodeLoaderThread(QThread):
             self.error.emit(str(exc))
 
 
-# ── Main widget ───────────────────────────────────────────────────────────────
+# ── Inner GL widget ───────────────────────────────────────────────────────────
 
-class ToolpathViewer(QOpenGLWidget):
+class _ToolpathGL(QOpenGLWidget):
     """
-    Renders the GCode toolpath using OpenGL — no subsampling, no artifacts,
-    smooth rotation at any point count.
+    Raw OpenGL widget — all rendering logic lives here.
+    Wrapped by ToolpathViewer which adds the layer-range control bar.
     """
 
     def __init__(self, parent=None):
-        # OpenGL 3.3 Core Profile + 4× MSAA must be requested before show()
         fmt = QSurfaceFormat()
         fmt.setVersion(3, 3)
         fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
@@ -217,24 +230,28 @@ class ToolpathViewer(QOpenGLWidget):
         self.pan_x: float = 0.0
         self.pan_y: float = 0.0
 
+        # ── Z-range clip (normalized: -1 = bed, +1 = top) ─────────────────
+        self._z_lo: float = -1.0
+        self._z_hi: float =  1.0
+
         # ── Data state ────────────────────────────────────────────────────────
         self._n_verts:    int  = 0
-        self._segments:   list = []   # list of (start_idx, count)
+        self._segments:   list = []
         self._loading:    bool = False
         self._error:      str  = ""
         self._label:      str  = ""
 
-        # Vertex data waiting to be uploaded (set from background slot,
-        # consumed on the next paintGL call where context is current)
         self._pending:          Optional[np.ndarray] = None
         self._pending_segments: list = []
 
-        # ── GL objects (valid only after initializeGL) ─────────────────────
+        # ── GL objects ────────────────────────────────────────────────────────
         self._gl_ready: bool = False
         self._prog:  Optional[QOpenGLShaderProgram]     = None
         self._vao:   Optional[QOpenGLVertexArrayObject] = None
         self._vbo:   Optional[QOpenGLBuffer]            = None
-        self._mvp_loc: int = -1
+        self._mvp_loc:  int = -1
+        self._z_lo_loc: int = -1
+        self._z_hi_loc: int = -1
 
         # ── Interaction ───────────────────────────────────────────────────────
         self._last_mouse = None
@@ -245,7 +262,6 @@ class ToolpathViewer(QOpenGLWidget):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load_gcode(self, path: str) -> None:
-        """Start loading a .gcode file in the background."""
         self._loading = True
         self._error   = ""
         self._n_verts = 0
@@ -290,38 +306,37 @@ class ToolpathViewer(QOpenGLWidget):
     def _on_loaded(self, pts: np.ndarray, segments: list):
         self._loading = False
         n_segs = len(segments)
-        self._label = f"{len(pts):,} extrusion moves  •  {n_segs} segment{'s' if n_segs != 1 else ''}"
+        self._label = (
+            f"{len(pts):,} pts  •  {n_segs} segment{'s' if n_segs != 1 else ''}"
+        )
 
-        # ── Normalize to [-1, 1]³ ────────────────────────────────────────────
+        # Normalize to [-1, 1]³
         mn = pts.min(0); mx = pts.max(0)
         center  = (mn + mx) * 0.5
         scale_v = float(np.abs(pts - center).max())
         if scale_v < 1e-9:
             scale_v = 1.0
-        pts_n = (pts - center) / scale_v            # (N, 3)
+        pts_n = (pts - center) / scale_v
 
-        # GCode Z is height; swap Z↔Y so index-1 = old-Z (height axis).
-        # Then flip so that high Z (top of print) maps to negative index-1 —
-        # matching OpenGL convention where we apply -s_y in the MVP.
+        # GCode Z is height; swap Z↔Y so index-1 = old-Z, then negate
         pts_n = pts_n[:, [0, 2, 1]].copy()
         pts_n[:, 1] *= -1.0
 
-        # ── Per-vertex colour: blue (base) → orange (top) ───────────────────
+        # Per-vertex colour: blue (base) → orange (top)
         z_min = pts[:, 2].min(); z_max = pts[:, 2].max()
-        t = (pts[:, 2] - z_min) / max(z_max - z_min, 1e-9)   # 0→1
+        t = (pts[:, 2] - z_min) / max(z_max - z_min, 1e-9)
         colours = np.column_stack([
             0.12 + 0.78 * t,   # R
             0.39 + 0.31 * t,   # G
             0.86 - 0.59 * t,   # B
         ]).astype(np.float32)
 
-        # ── Build interleaved buffer: [x y z r g b] per vertex ───────────────
         self._pending = np.column_stack(
             [pts_n.astype(np.float32), colours]
-        ).astype(np.float32, copy=False)             # (N, 6)
+        ).astype(np.float32, copy=False)
         self._pending_segments = segments
 
-        self.reset_view()   # also calls update()
+        self.reset_view()
 
     @pyqtSlot(str)
     def _on_error(self, msg: str):
@@ -338,16 +353,16 @@ class ToolpathViewer(QOpenGLWidget):
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
 
-        # Shaders
         self._prog = QOpenGLShaderProgram(self)
         self._prog.addShaderFromSourceCode(
             QOpenGLShader.ShaderTypeBit.Vertex,   _VERT)
         self._prog.addShaderFromSourceCode(
             QOpenGLShader.ShaderTypeBit.Fragment, _FRAG)
         self._prog.link()
-        self._mvp_loc = self._prog.uniformLocation("uMVP")
+        self._mvp_loc  = self._prog.uniformLocation("uMVP")
+        self._z_lo_loc = self._prog.uniformLocation("uZLo")
+        self._z_hi_loc = self._prog.uniformLocation("uZHi")
 
-        # VAO + VBO (empty until first data is loaded)
         self._vao = QOpenGLVertexArrayObject(self)
         self._vao.create()
         self._vao.bind()
@@ -357,7 +372,7 @@ class ToolpathViewer(QOpenGLWidget):
         self._vbo.bind()
         self._vbo.setUsagePattern(QOpenGLBuffer.UsagePattern.DynamicDraw)
 
-        stride = 6 * 4   # 6 floats × 4 bytes = 24
+        stride = 6 * 4
         gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, stride,
                                  ctypes.c_void_p(0))
         gl.glEnableVertexAttribArray(0)
@@ -373,7 +388,6 @@ class ToolpathViewer(QOpenGLWidget):
         gl.glViewport(0, 0, w, h)
 
     def paintGL(self):
-        # ── Upload pending vertex data ─────────────────────────────────────
         if self._pending is not None and self._gl_ready:
             data = self._pending
             self._vbo.bind()
@@ -392,10 +406,10 @@ class ToolpathViewer(QOpenGLWidget):
         self._prog.bind()
         mvp = self._build_mvp(self.width(), self.height())
         gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
+        gl.glUniform1f(self._z_lo_loc, self._z_lo)
+        gl.glUniform1f(self._z_hi_loc, self._z_hi)
         self._vao.bind()
 
-        # Draw each continuous extrusion segment separately so travel moves
-        # don't create spurious diagonal lines between print segments.
         for start, count in self._segments:
             if count >= 2:
                 gl.glDrawArrays(gl.GL_LINE_STRIP, start, count)
@@ -403,9 +417,8 @@ class ToolpathViewer(QOpenGLWidget):
         self._vao.release()
         self._prog.release()
 
-    # Override paintEvent so we can draw text overlays on top of the GL scene
     def paintEvent(self, event):
-        super().paintEvent(event)           # triggers paintGL
+        super().paintEvent(event)
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -415,15 +428,12 @@ class ToolpathViewer(QOpenGLWidget):
             painter.setFont(QFont("Helvetica", 14))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                              f"Loading GCode…\n{self._label}")
-
         elif self._error:
             painter.setPen(QColor(220, 80, 80))
             painter.setFont(QFont("Helvetica", 12))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                              f"Error:\n{self._error}")
-
         elif self._n_verts == 0:
-            # Draw background gradient when there's no GL content
             grad = QLinearGradient(0, 0, 0, self.height())
             grad.setColorAt(0, QColor(22, 26, 34))
             grad.setColorAt(1, QColor(14, 18, 24))
@@ -432,9 +442,8 @@ class ToolpathViewer(QOpenGLWidget):
             painter.setFont(QFont("Helvetica", 13))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                              "Generate GCode to see toolpath preview")
-
         else:
-            painter.setPen(QColor(120, 120, 150))
+            painter.setPen(QColor(100, 100, 130))
             painter.setFont(QFont("Helvetica", 10))
             painter.drawText(8, self.height() - 8, self._label)
 
@@ -443,14 +452,6 @@ class ToolpathViewer(QOpenGLWidget):
     # ── MVP matrix ────────────────────────────────────────────────────────────
 
     def _build_mvp(self, w: int, h: int) -> np.ndarray:
-        """
-        4×4 row-major MVP.  OpenGL NDC has Y pointing UP, but our stored
-        vertex Y is already negated (high print = negative Y) — so we apply
-        -s_y to flip it back up for the screen.
-
-        NDC.x =  s_x * rot.x + p_x
-        NDC.y = -s_y * rot.y + p_y   (double-negation → top of print at top)
-        """
         rx = math.radians(self.rot_x)
         ry = math.radians(self.rot_y)
         cos_rx, sin_rx = math.cos(rx), math.sin(rx)
@@ -477,7 +478,7 @@ class ToolpathViewer(QOpenGLWidget):
 
         S = np.array([
             [s_x,  0,   0, p_x],
-            [0,   -s_y, 0, p_y],   # -s_y: flip Y so top of print appears at top
+            [0,   -s_y, 0, p_y],
             [0,    0,   1, 0  ],
             [0,    0,   0, 1  ],
         ], dtype=np.float32)
@@ -516,3 +517,132 @@ class ToolpathViewer(QOpenGLWidget):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.zoom = max(0.05, min(20.0, self.zoom * factor))
         self.update()
+
+
+# ── Public wrapper widget (GL + layer-range bar) ──────────────────────────────
+
+class ToolpathViewer(QWidget):
+    """
+    QWidget container that embeds the OpenGL toolpath canvas plus a compact
+    layer-range control bar at the bottom.
+
+    The bar has two percentage sliders (bottom % and top %) which feed
+    Z-clip uniforms into the shader — no VBO rebuild needed, instant feedback.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 320)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── GL canvas ─────────────────────────────────────────────────────────
+        self._gl = _ToolpathGL(self)
+        root.addWidget(self._gl, stretch=1)
+
+        # ── Layer-range control bar ───────────────────────────────────────────
+        bar = QWidget()
+        bar.setFixedHeight(30)
+        bar.setStyleSheet("background: #161820;")
+        bar_l = QHBoxLayout(bar)
+        bar_l.setContentsMargins(8, 2, 8, 2)
+        bar_l.setSpacing(6)
+
+        lbl_filter = QLabel("Layers:")
+        lbl_filter.setStyleSheet("color: #779; font-size: 11px;")
+        lbl_filter.setFixedWidth(46)
+        bar_l.addWidget(lbl_filter)
+
+        lo_lbl = QLabel("Bot")
+        lo_lbl.setStyleSheet("color: #667; font-size: 10px;")
+        bar_l.addWidget(lo_lbl)
+
+        self._lo_slider = QSlider(Qt.Orientation.Horizontal)
+        self._lo_slider.setRange(0, 100)
+        self._lo_slider.setValue(0)
+        self._lo_slider.setFixedHeight(18)
+        self._lo_slider.setToolTip("Bottom of visible height range")
+        bar_l.addWidget(self._lo_slider)
+
+        hi_lbl = QLabel("Top")
+        hi_lbl.setStyleSheet("color: #667; font-size: 10px;")
+        bar_l.addWidget(hi_lbl)
+
+        self._hi_slider = QSlider(Qt.Orientation.Horizontal)
+        self._hi_slider.setRange(0, 100)
+        self._hi_slider.setValue(100)
+        self._hi_slider.setFixedHeight(18)
+        self._hi_slider.setToolTip("Top of visible height range")
+        bar_l.addWidget(self._hi_slider)
+
+        self._range_lbl = QLabel("0 – 100%")
+        self._range_lbl.setStyleSheet("color: #88a; font-size: 10px;")
+        self._range_lbl.setFixedWidth(70)
+        self._range_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bar_l.addWidget(self._range_lbl)
+
+        reset_btn = QPushButton("All")
+        reset_btn.setFixedSize(32, 20)
+        reset_btn.setStyleSheet(
+            "QPushButton { font-size: 10px; padding: 0; color: #99b; }"
+            "QPushButton:hover { color: #ccf; }"
+        )
+        reset_btn.setToolTip("Show all layers")
+        reset_btn.clicked.connect(self._reset_range)
+        bar_l.addWidget(reset_btn)
+
+        root.addWidget(bar)
+
+        self._lo_slider.valueChanged.connect(self._on_range_changed)
+        self._hi_slider.valueChanged.connect(self._on_range_changed)
+
+    # ── Range control ─────────────────────────────────────────────────────────
+
+    def _on_range_changed(self):
+        lo = self._lo_slider.value()
+        hi = self._hi_slider.value()
+
+        # Clamp so lo never exceeds hi
+        if lo > hi:
+            if self.sender() is self._lo_slider:
+                lo = hi
+                self._lo_slider.blockSignals(True)
+                self._lo_slider.setValue(lo)
+                self._lo_slider.blockSignals(False)
+            else:
+                hi = lo
+                self._hi_slider.blockSignals(True)
+                self._hi_slider.setValue(hi)
+                self._hi_slider.blockSignals(False)
+
+        self._range_lbl.setText(f"{lo} – {hi}%")
+
+        # Map [0, 100] → [-1.0, +1.0] for the shader
+        self._gl._z_lo = lo / 50.0 - 1.0
+        self._gl._z_hi = hi / 50.0 - 1.0
+        self._gl.update()
+
+    def _reset_range(self):
+        self._lo_slider.blockSignals(True)
+        self._hi_slider.blockSignals(True)
+        self._lo_slider.setValue(0)
+        self._hi_slider.setValue(100)
+        self._lo_slider.blockSignals(False)
+        self._hi_slider.blockSignals(False)
+        self._range_lbl.setText("0 – 100%")
+        self._gl._z_lo = -1.0
+        self._gl._z_hi =  1.0
+        self._gl.update()
+
+    # ── Public API (delegate to inner GL widget) ──────────────────────────────
+
+    def load_gcode(self, path: str) -> None:
+        self._reset_range()
+        self._gl.load_gcode(path)
+
+    def clear(self) -> None:
+        self._reset_range()
+        self._gl.clear()
