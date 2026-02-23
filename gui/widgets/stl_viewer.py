@@ -150,7 +150,8 @@ class STLLoaderThread(QThread):
 class _STLViewerGL(QOpenGLWidget):
     """All OpenGL rendering. Wrapped by STLViewer which adds the control bar."""
 
-    file_dropped = pyqtSignal(str)
+    file_dropped   = pyqtSignal(str)
+    model_extents  = pyqtSignal(float, float, float)   # x_mm, y_mm, z_mm (raw, before scale)
 
     def __init__(self, parent=None):
         fmt = QSurfaceFormat()
@@ -176,6 +177,9 @@ class _STLViewerGL(QOpenGLWidget):
 
         # ── Model scale (relative to print volume, independent of camera zoom) ─
         self._model_scale: float = 1.0
+
+        # ── Raw STL extents in mm (before normalization or user scale) ────────
+        self._raw_extents: tuple = (0.0, 0.0, 0.0)   # (x_mm, y_mm, z_mm)
 
         # ── Transparent mode ──────────────────────────────────────────────────
         self._transparent: bool = False
@@ -291,6 +295,13 @@ class _STLViewerGL(QOpenGLWidget):
             scale = 1.0
         self._scale_mm = scale   # 1 normalized unit = scale mm
 
+        # Store raw bounding-box extents in mm for the dimensions display.
+        x_ext = float(flat[:, 0].max() - flat[:, 0].min())
+        y_ext = float(flat[:, 1].max() - flat[:, 1].min())
+        z_ext = float(flat[:, 2].max() - flat[:, 2].min())
+        self._raw_extents = (x_ext, y_ext, z_ext)
+        self.model_extents.emit(x_ext, y_ext, z_ext)
+
         # After axis-swap+flip the viewer Y of the model's STL floor is:
         #   viewer_y_bottom = (center_z - z_min) / scale
         #                   = (z_max - z_min) / (2 * scale)
@@ -304,28 +315,13 @@ class _STLViewerGL(QOpenGLWidget):
         verts[:, :, 1] *= -1.0
 
         # Recompute face normals from the already-transformed vertices.
+        # We trust the STL winding — outward-facing normals mean front faces,
+        # inward-facing mean back faces. GL_CULL_FACE handles the rest.
         v0, v1, v2 = verts[:, 0], verts[:, 1], verts[:, 2]
         face_normals = np.cross(v1 - v0, v2 - v0)
         norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
         norms = np.where(norms > 1e-12, norms, 1.0)
         face_normals = (face_normals / norms).astype(np.float32)
-
-        # Best-effort winding fix for convex models. Non-convex models with
-        # incorrect winding are handled in the fragment shader via gl_FrontFacing.
-        tri_centers = (v0 + v1 + v2) / 3.0
-        dot_check = np.einsum('ij,ij->i', tri_centers, face_normals)
-        inverted = dot_check < 0
-        if np.any(inverted):
-            verts[inverted, 1], verts[inverted, 2] = (
-                verts[inverted, 2].copy(), verts[inverted, 1].copy()
-            )
-            v0f = verts[inverted, 0]
-            v1f = verts[inverted, 1]
-            v2f = verts[inverted, 2]
-            fn = np.cross(v1f - v0f, v2f - v0f)
-            fn_len = np.linalg.norm(fn, axis=1, keepdims=True)
-            fn_len = np.where(fn_len > 1e-12, fn_len, 1.0)
-            face_normals[inverted] = (fn / fn_len).astype(np.float32)
 
         # Build interleaved VBO: [x y z nx ny nz] × 3 vertices per triangle
         N = len(verts)
@@ -444,11 +440,18 @@ class _STLViewerGL(QOpenGLWidget):
         # ── Model triangles ────────────────────────────────────────────────
         if self._n_tris > 0:
             if self._transparent:
+                # Show both faces — useful for inspecting hollow geometry
+                gl.glDisable(gl.GL_CULL_FACE)
                 gl.glEnable(gl.GL_BLEND)
                 gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
                 gl.glDepthMask(gl.GL_FALSE)
                 alpha = 0.35
             else:
+                # Cull back faces so interior surfaces are never visible.
+                # STL files for 3D printing use outward normals → exterior faces
+                # are front-facing (CCW) and interior faces are culled.
+                gl.glEnable(gl.GL_CULL_FACE)
+                gl.glCullFace(gl.GL_BACK)
                 gl.glDisable(gl.GL_BLEND)
                 gl.glDepthMask(gl.GL_TRUE)
                 alpha = 1.0
@@ -461,6 +464,7 @@ class _STLViewerGL(QOpenGLWidget):
             self._prog.release()
             if self._transparent:
                 gl.glDepthMask(gl.GL_TRUE)
+            gl.glDisable(gl.GL_CULL_FACE)   # box uses GL_LINES — culling irrelevant but clean
 
         # ── Print volume box (unscaled — always shows the actual bed size) ─
         if self._box_n_verts > 0 and self._box_prog is not None:
@@ -699,8 +703,24 @@ class STLViewer(QWidget):
 
         root.addWidget(bar)
 
+        # ── Dimensions info bar ───────────────────────────────────────────────
+        info_bar = QWidget()
+        info_bar.setFixedHeight(22)
+        info_bar.setStyleSheet("background: #12131a;")
+        il = QHBoxLayout(info_bar)
+        il.setContentsMargins(8, 0, 8, 0)
+        il.setSpacing(0)
+
+        self._dims_lbl = QLabel("")
+        self._dims_lbl.setStyleSheet("color: #667; font-size: 10px;")
+        il.addWidget(self._dims_lbl)
+        il.addStretch()
+
+        root.addWidget(info_bar)
+
         self._scale_spin.valueChanged.connect(self._on_scale_changed)
         self._transparent_check.toggled.connect(self._on_transparent_changed)
+        self._gl.model_extents.connect(self._on_model_extents)
 
     # ── Scale control ─────────────────────────────────────────────────────────
 
@@ -710,9 +730,26 @@ class STLViewer(QWidget):
         Used by the slicer to physically scale the STL before slicing."""
         return self._scale_spin.value() / 100.0
 
+    def _on_model_extents(self, x_mm: float, y_mm: float, z_mm: float) -> None:
+        self._update_dims_label(x_mm, y_mm, z_mm)
+
+    def _update_dims_label(self, x_mm: float = None, y_mm: float = None, z_mm: float = None) -> None:
+        if x_mm is None:
+            x_mm, y_mm, z_mm = self._gl._raw_extents
+        if x_mm == 0.0 and y_mm == 0.0 and z_mm == 0.0:
+            self._dims_lbl.setText("")
+            return
+        s = self._scale_spin.value() / 100.0
+        sx, sy, sz = x_mm * s, y_mm * s, z_mm * s
+        max_d = max(sx, sy)
+        self._dims_lbl.setText(
+            f"H: {sz:.1f}mm   W: {sx:.1f}mm   D: {sy:.1f}mm   Ø: {max_d:.1f}mm"
+        )
+
     def _on_scale_changed(self, pct: float) -> None:
         self._gl._model_scale = pct / 100.0
         self._gl.update()
+        self._update_dims_label()
 
     def _reset_scale(self) -> None:
         self._scale_spin.setValue(100.0)
@@ -728,6 +765,7 @@ class STLViewer(QWidget):
 
     def clear(self) -> None:
         self._gl.clear()
+        self._dims_lbl.setText("")
 
     def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
         self._gl.set_print_volume(bed_x, bed_y, max_z)

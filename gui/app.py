@@ -91,12 +91,14 @@ QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {
     background: #3a4570;
 }
 QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
-    width: 10px;
-    height: 10px;
+    image: url("{arrow_up}");
+    width: 8px;
+    height: 6px;
 }
 QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
-    width: 10px;
-    height: 10px;
+    image: url("{arrow_down}");
+    width: 8px;
+    height: 6px;
 }
 QComboBox::drop-down { border: none; }
 QComboBox QAbstractItemView {
@@ -157,6 +159,9 @@ QSplitter::handle:vertical  { height: 2px; }
 """
 
 
+_RES = Path(__file__).parent / "resources"
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("MeshyGen")
@@ -169,7 +174,10 @@ def main():
     font.setPointSize(12)
     app.setFont(font)
 
-    app.setStyleSheet(DARK_STYLE)
+    # Inject SVG arrow paths (absolute, forward-slash) into the stylesheet
+    arrow_up   = str(_RES / "arrow_up.svg").replace("\\", "/")
+    arrow_down = str(_RES / "arrow_down.svg").replace("\\", "/")
+    app.setStyleSheet(DARK_STYLE.format(arrow_up=arrow_up, arrow_down=arrow_down))
 
     # Import here (after path setup) to avoid circular issues
     sys.path.insert(0, str(Path(__file__).parent.parent))

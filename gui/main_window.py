@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MeshyGen — Mesh Vase Slicer")
-        self.resize(1280, 860)
+        self.resize(1480, 960)
 
         self._stl_path:    str = ""
         self._gcode_path:  str = ""
@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
         # RIGHT: vertical splitter
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         main_splitter.addWidget(right_splitter)
-        main_splitter.setSizes([290, 990])
+        main_splitter.setSizes([360, 1120])
 
         # ── Preview tabs ──────────────────────────────────────────────────────
         self.preview_tabs = QTabWidget()
