@@ -498,7 +498,7 @@ class ToolpathViewer(QOpenGLWidget):
         self._last_mouse = event.position()
         if self._mouse_btn == Qt.MouseButton.LeftButton:
             self.rot_y += dx * 0.5
-            self.rot_x -= dy * 0.5
+            self.rot_x += dy * 0.5
             self.update()
         elif self._mouse_btn == Qt.MouseButton.RightButton:
             self.pan_x += dx
