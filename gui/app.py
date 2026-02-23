@@ -68,6 +68,36 @@ QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus,
 QComboBox:focus, QTextEdit:focus {
     border: 1px solid #4a6aaf;
 }
+QDoubleSpinBox::up-button, QSpinBox::up-button {
+    subcontrol-position: top right;
+    subcontrol-origin: border;
+    width: 18px;
+    border-left: 1px solid #3a3d50;
+    background: #2c3350;
+    border-top-right-radius: 3px;
+}
+QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover {
+    background: #3a4570;
+}
+QDoubleSpinBox::down-button, QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    subcontrol-origin: border;
+    width: 18px;
+    border-left: 1px solid #3a3d50;
+    background: #2c3350;
+    border-bottom-right-radius: 3px;
+}
+QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {
+    background: #3a4570;
+}
+QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
+    width: 10px;
+    height: 10px;
+}
+QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
+    width: 10px;
+    height: 10px;
+}
 QComboBox::drop-down { border: none; }
 QComboBox QAbstractItemView {
     background: #252630;

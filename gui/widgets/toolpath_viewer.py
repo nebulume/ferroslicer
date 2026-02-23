@@ -327,6 +327,8 @@ class _ToolpathGL(QOpenGLWidget):
 
         self._z_lo: float = -1.0
         self._z_hi: float =  1.0
+        self._vz_min: float = -1.0   # actual vZ range of loaded toolpath
+        self._vz_max: float =  1.0
         self._show_seams: bool = True
 
         self._n_verts:    int  = 0
@@ -462,6 +464,13 @@ class _ToolpathGL(QOpenGLWidget):
             return p
 
         pts_n = _transform(pts)
+
+        # Store actual vZ range (vZ = -pts_n[:,1] in the vertex shader)
+        # so the layer sliders map precisely to the model's height range.
+        self._vz_min = float(-pts_n[:, 1].max())
+        self._vz_max = float(-pts_n[:, 1].min())
+        self._z_lo   = self._vz_min
+        self._z_hi   = self._vz_max
 
         z_min = pts[:, 2].min(); z_max = pts[:, 2].max()
         t = (pts[:, 2] - z_min) / max(z_max - z_min, 1e-9)
@@ -663,7 +672,7 @@ class _ToolpathGL(QOpenGLWidget):
         sy = min(w,h)/h * self.zoom
         px =  2.0*self.pan_x/w
         py = -2.0*self.pan_y/h
-        S = np.array([[sx,0,0,px],[0,-sy,0,py],[0,0,1,0],[0,0,0,1]], np.float32)
+        S = np.array([[sx,0,0,px],[0,-sy,0,py],[0,0,0.05,0],[0,0,0,1]], np.float32)
         return (S @ R).astype(np.float32)
 
     # ── Interaction ───────────────────────────────────────────────────────────
@@ -800,8 +809,10 @@ class ToolpathViewer(QWidget):
                 hi = lo
                 self._hi.blockSignals(True); self._hi.setValue(hi); self._hi.blockSignals(False)
         self._range_lbl.setText(f"{lo/10:.1f} – {hi/10:.1f}%")
-        self._gl._z_lo = lo / 500.0 - 1.0
-        self._gl._z_hi = hi / 500.0 - 1.0
+        vz_min = self._gl._vz_min
+        vz_max = self._gl._vz_max
+        self._gl._z_lo = vz_min + (lo / 1000.0) * (vz_max - vz_min)
+        self._gl._z_hi = vz_min + (hi / 1000.0) * (vz_max - vz_min)
         self._gl.update()
 
     def _reset_range(self):
@@ -809,7 +820,8 @@ class ToolpathViewer(QWidget):
         self._lo.setValue(0); self._hi.setValue(1000)
         self._lo.blockSignals(False); self._hi.blockSignals(False)
         self._range_lbl.setText("0.0 – 100.0%")
-        self._gl._z_lo = -1.0; self._gl._z_hi = 1.0
+        self._gl._z_lo = self._gl._vz_min
+        self._gl._z_hi = self._gl._vz_max
         self._gl.update()
 
     def _on_seam_toggle(self, state):

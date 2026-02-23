@@ -277,6 +277,12 @@ Examples:
         )
 
         parser.add_argument(
+            "--scale",
+            type=float,
+            help="Uniform scale factor applied to the STL before slicing (e.g. 0.5 = half-size, 2.0 = double)"
+        )
+
+        parser.add_argument(
             "--base-height",
             type=float,
             help="Base integrity height (mm)"
@@ -575,6 +581,9 @@ Examples:
         if hasattr(args, 'seam_transition_waves') and args.seam_transition_waves is not None:
             config_overrides.setdefault('mesh_settings', {})['seam_transition_waves'] = args.seam_transition_waves
 
+        if hasattr(args, 'scale') and args.scale is not None:
+            config_overrides['model_scale'] = args.scale
+
         if hasattr(args, 'base_height') and args.base_height:
             config_overrides.setdefault('mesh_settings', {})['base_height'] = args.base_height
 
@@ -698,6 +707,9 @@ Examples:
                 cmd += f" --seam-position {overrides['mesh_settings']['seam_position']}"
             if 'seam_transition_waves' in overrides['mesh_settings']:
                 cmd += f" --seam-transition-waves {overrides['mesh_settings']['seam_transition_waves']}"
+        if 'model_scale' in overrides and overrides['model_scale'] != 1.0:
+            cmd += f" --scale {overrides['model_scale']}"
+        if 'mesh_settings' in overrides:
             if 'base_height' in overrides['mesh_settings']:
                 cmd += f" --base-height {overrides['mesh_settings']['base_height']}"
             if 'base_mode' in overrides['mesh_settings']:

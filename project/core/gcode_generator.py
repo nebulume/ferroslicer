@@ -333,9 +333,9 @@ class GCodeGenerator:
         purge_distance = 20.0
         purge_length = 40.0
         purge_x = max_x + purge_distance  # 20mm to the right of the rightmost perimeter point
-        purge_start = Vector3(purge_x, cy - purge_length/2, 0.5)
-        purge_mid = Vector3(purge_x, cy, 0.5)
-        purge_end = Vector3(purge_x, cy + purge_length/2, 0.5)
+        purge_start = Vector3(purge_x, cy - purge_length/2, self.layer_height)
+        purge_mid = Vector3(purge_x, cy, self.layer_height)
+        purge_end = Vector3(purge_x, cy + purge_length/2, self.layer_height)
         
         # Move to purge start
         self.gcode_lines.append(f"; Move to purge line start ({purge_distance}mm from print)")
@@ -440,16 +440,20 @@ class GCodeGenerator:
             self.gcode_lines.append("; Unretract before skirt")
             self.gcode_lines.append("G11")
             
-            # Print skirt loop with extrusion
+            # Print skirt loop with extrusion.
+            # Use nozzle_diameter (not the 1.2× main-print width) so the skirt
+            # is a single clean line rather than a wide bead.
+            skirt_width = self.nozzle_diameter
+            skirt_e_factor = (self.layer_height * skirt_width) / self.filament_cross_section
             for i in range(1, len(skirt_points)):
                 prev_point = skirt_points[i-1]
                 curr_point = skirt_points[i]
                 seg_len = math.sqrt(
-                    (curr_point.x - prev_point.x)**2 + 
-                    (curr_point.y - prev_point.y)**2 + 
+                    (curr_point.x - prev_point.x)**2 +
+                    (curr_point.y - prev_point.y)**2 +
                     (curr_point.z - prev_point.z)**2
                 )
-                extrusion = self._calculate_extrusion(seg_len)
+                extrusion = seg_len * skirt_e_factor
                 self._add_move(curr_point, extrusion_amount=extrusion)
             
             self.gcode_lines.append("; Retract after skirt")
@@ -502,33 +506,33 @@ class GCodeGenerator:
             purge_x = base_min_x - gap
             y_start = cy - (length / 2.0)
             y_end = cy + (length / 2.0)
-            purge_start = Vector3(purge_x, max(y_start, 0.0), 0.5)
-            purge_end = Vector3(purge_x, min(y_end, 220.0), 0.5)
+            purge_start = Vector3(purge_x, max(y_start, 0.0), self.layer_height)
+            purge_end = Vector3(purge_x, min(y_end, 220.0), self.layer_height)
         elif side == 'right':
             purge_x = base_max_x + gap
             y_start = cy - (length / 2.0)
             y_end = cy + (length / 2.0)
-            purge_start = Vector3(purge_x, max(y_start, 0.0), 0.5)
-            purge_end = Vector3(purge_x, min(y_end, 220.0), 0.5)
+            purge_start = Vector3(purge_x, max(y_start, 0.0), self.layer_height)
+            purge_end = Vector3(purge_x, min(y_end, 220.0), self.layer_height)
         elif side == 'front':
             purge_y = base_max_y + gap
             x_start = cx - (length / 2.0)
             x_end = cx + (length / 2.0)
-            purge_start = Vector3(max(x_start, 0.0), purge_y, 0.5)
-            purge_end = Vector3(min(x_end, 220.0), purge_y, 0.5)
+            purge_start = Vector3(max(x_start, 0.0), purge_y, self.layer_height)
+            purge_end = Vector3(min(x_end, 220.0), purge_y, self.layer_height)
         elif side == 'back':
             purge_y = base_min_y - gap
             x_start = cx - (length / 2.0)
             x_end = cx + (length / 2.0)
-            purge_start = Vector3(max(x_start, 0.0), purge_y, 0.5)
-            purge_end = Vector3(min(x_end, 220.0), purge_y, 0.5)
+            purge_start = Vector3(max(x_start, 0.0), purge_y, self.layer_height)
+            purge_end = Vector3(min(x_end, 220.0), purge_y, self.layer_height)
         else:
             # default to left behavior
             purge_x = base_min_x - gap
             y_start = cy - (length / 2.0)
             y_end = cy + (length / 2.0)
-            purge_start = Vector3(purge_x, max(y_start, 0.0), 0.5)
-            purge_end = Vector3(purge_x, min(y_end, 220.0), 0.5)
+            purge_start = Vector3(purge_x, max(y_start, 0.0), self.layer_height)
+            purge_end = Vector3(purge_x, min(y_end, 220.0), self.layer_height)
 
         # Start from back-right corner of build plate (safe position)
         safe_start = Vector3(219.0, 219.0, 2.0)
@@ -714,7 +718,15 @@ class GCodeGenerator:
         offset_x = plate_center_x - model_center_x
         offset_y = plate_center_y - model_center_y
 
-        return Vector3(offset_x, offset_y, 0.0)
+        # Z offset: ensure the bottom of the model sits at Z=0 (the bed).
+        # Without this, STL files whose geometry doesn't start at Z=0
+        # (e.g. models centred at origin with z_min = -height/2) would
+        # hover above the bed and the skirt would print below the model.
+        offset_z = 0.0
+        if model_bounds is not None:
+            offset_z = self.layer_height - model_bounds[0].z
+
+        return Vector3(offset_x, offset_y, offset_z)
 
     def _calculate_extrusion(self, path_length: float) -> float:
         """

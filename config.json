@@ -53,5 +53,6 @@
         "curvature_frequency_reduction": 40,
         "transition_smoothness": "medium"
     },
+    "model_scale": 1.0,
     "orcaslicer_path": "/Applications/OrcaSlicer.app"
 }

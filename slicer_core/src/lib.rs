@@ -663,12 +663,7 @@ fn generate_spiral_with_waves(
         .map(|idx| {
             let angle = (idx % ppr) as f64 * deg_per_pt;
             let revolution = idx as f64 / ppr as f64;
-            // First revolution: gentle Z gradient (0.3 → 0.8 mm)
-            let z = if revolution < 1.0 {
-                0.3 + 0.5 * revolution
-            } else {
-                0.8 + (revolution - 1.0) * layer_height
-            };
+            let z = min_z + revolution * layer_height;
             let layer_idx = revolution.min((num_layers - 1) as f64);
             PtCtrl { angle, revolution, z, layer_idx }
         })

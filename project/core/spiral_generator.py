@@ -249,19 +249,9 @@ class SpiralGenerator:
             # Each revolution corresponds to layer_height rise
             layer_index = revolution
 
-            # Z height: special handling for first revolution to improve adhesion
-            # First revolution: Z rises from 0.3mm to 0.5-0.8mm (user-configured end height)
-            # After first revolution: normal layer_height stepping
-            # NOTE: We use minimum Z (0) as the base, not layers[0].z, to get proper first rev height
+            # Z rises uniformly by layer_height per revolution, starting at the model's min Z.
             min_z = self.layers[0].z
-            if revolution < 1.0:
-                # First revolution gradient: 0.3mm start -> gradual rise to 0.8mm end
-                first_rev_start_z = 0.3
-                first_rev_end_z = 0.8
-                z = first_rev_start_z + (first_rev_end_z - first_rev_start_z) * revolution
-            else:
-                # Normal spiral: continues from 0.8mm with standard layer_height steps
-                z = 0.8 + (revolution - 1.0) * self.layer_height
+            z = min_z + revolution * self.layer_height
 
             # Clamp layer index to available layers
             clamped_layer_idx = min(layer_index, len(self.layers) - 1)

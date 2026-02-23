@@ -38,7 +38,7 @@ from gui.widgets.toolpath_viewer import ToolpathViewer
 from gui.widgets.settings_panel  import SettingsPanel
 from gui.widgets.file_browser    import FileBrowserWidget
 from gui.workers.slicer_worker   import SlicerWorker
-from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings
+from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings, save_app_settings
 from gui.dialogs.print_history   import PrintHistoryDialog
 from gui.dialogs.gcode_library   import GCodeLibraryDialog
 import db.print_db as pdb
@@ -393,11 +393,29 @@ class MainWindow(QMainWindow):
 
     # ── File loading ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _resolve_start_dir(preferred: str) -> str:
+        """Return the first ancestor of *preferred* that actually exists on disk.
+
+        If the saved directory has been moved/deleted we walk up the tree until
+        we find one that exists, falling back to the home directory."""
+        if not preferred:
+            return str(Path.home())
+        p = Path(preferred)
+        while p != p.parent:   # stop at filesystem root
+            if p.exists():
+                return str(p)
+            p = p.parent
+        return str(Path.home())
+
     def _pick_stl(self):
+        start = self._resolve_start_dir(self._app_settings.get("last_stl_dir", ""))
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open STL file", "", "STL Files (*.stl);;All (*)"
+            self, "Open STL file", start, "STL Files (*.stl);;All (*)"
         )
         if path:
+            self._app_settings["last_stl_dir"] = str(Path(path).parent)
+            save_app_settings(self._app_settings)
             self._load_stl(path)
 
     def _load_stl(self, path: str):
@@ -445,6 +463,7 @@ class MainWindow(QMainWindow):
             return
 
         overrides = self.settings_panel.get_config_overrides()
+        overrides["model_scale"] = self.stl_viewer.model_scale
         settings  = self._app_settings
         custom_gcode = {
             "start_gcode": settings.get("start_gcode", ""),

@@ -30,8 +30,11 @@ from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLVertexArrayObject,
 )
 from PyQt6.QtGui import QSurfaceFormat, QPainter, QColor, QFont, QLinearGradient
-from PyQt6.QtWidgets import QSizePolicy
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import (
+    QWidget, QSizePolicy, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QDoubleSpinBox, QCheckBox,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QLocale
 
 
 # ── GLSL shaders ─────────────────────────────────────────────────────────────
@@ -41,10 +44,21 @@ _VERT = """
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 uniform mat4 uMVP;
-flat out vec3 vColor;
+flat out vec3 vNormal;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    vec3 n = normalize(aNormal);
+    vNormal = aNormal;
+}
+"""
+
+_FRAG = """
+#version 330 core
+flat in  vec3 vNormal;
+uniform float uAlpha;
+out vec4 fragColor;
+void main() {
+    // Flip normal for back-facing fragments so non-convex models look correct
+    vec3 n = normalize(gl_FrontFacing ? vNormal : -vNormal);
 
     vec3 key  = normalize(vec3( 0.55,  0.70,  1.0));
     vec3 fill = normalize(vec3(-0.60, -0.25,  0.55));
@@ -56,20 +70,12 @@ void main() {
 
     float lit = clamp(0.22 + 0.62*dk + 0.26*df + 0.14*dr, 0.0, 1.0);
 
-    vColor = vec3(
+    fragColor = vec4(
         0.20 + 0.65 * lit,
         0.21 + 0.62 * lit,
-        0.24 + 0.52 * lit
+        0.24 + 0.52 * lit,
+        uAlpha
     );
-}
-"""
-
-_FRAG = """
-#version 330 core
-flat in  vec3 vColor;
-out vec4 fragColor;
-void main() {
-    fragColor = vec4(vColor, 1.0);
 }
 """
 
@@ -139,13 +145,10 @@ class STLLoaderThread(QThread):
             self.error.emit(str(e))
 
 
-# ── Main widget ───────────────────────────────────────────────────────────────
+# ── Inner OpenGL widget ───────────────────────────────────────────────────────
 
-class STLViewer(QOpenGLWidget):
-    """
-    Rotatable 3D STL preview — OpenGL accelerated.
-    Accepts drag-and-drop STL files.
-    """
+class _STLViewerGL(QOpenGLWidget):
+    """All OpenGL rendering. Wrapped by STLViewer which adds the control bar."""
 
     file_dropped = pyqtSignal(str)
 
@@ -171,6 +174,13 @@ class STLViewer(QOpenGLWidget):
         self.pan_x: float = 0.0
         self.pan_y: float = 0.0
 
+        # ── Model scale (relative to print volume, independent of camera zoom) ─
+        self._model_scale: float = 1.0
+
+        # ── Transparent mode ──────────────────────────────────────────────────
+        self._transparent: bool = False
+        self._alpha_loc:   int  = -1
+
         # ── Data state ────────────────────────────────────────────────────────
         self._n_tris:   int  = 0
         self._loading:  bool = False
@@ -186,13 +196,15 @@ class STLViewer(QOpenGLWidget):
         self._mvp_loc: int = -1
 
         # ── Print volume box ──────────────────────────────────────────────────
-        self._bed_dims: Optional[tuple] = None          # (bed_x, bed_y, max_z) in mm
+        self._bed_dims:       Optional[tuple] = None   # (bed_x, bed_y, max_z) mm
+        self._scale_mm:       float           = 0.0    # model half-extent in mm (1 norm unit = this many mm)
+        self._model_y_bottom: float           = 0.0    # viewer-Y of model floor (box bed aligns here)
         self._box_prog:    Optional[QOpenGLShaderProgram]     = None
         self._box_vao:     Optional[QOpenGLVertexArrayObject] = None
         self._box_vbo:     Optional[QOpenGLBuffer]            = None
-        self._box_mvp_loc: int = -1
-        self._pending_box: Optional[np.ndarray] = None  # (24, 3) waiting for GL
-        self._box_n_verts: int = 0
+        self._box_mvp_loc: int                                = -1
+        self._pending_box: Optional[np.ndarray]               = None
+        self._box_n_verts: int                                = 0
 
         # ── Interaction ───────────────────────────────────────────────────────
         self._last_mouse = None
@@ -235,17 +247,27 @@ class STLViewer(QOpenGLWidget):
         self.update()
 
     def _queue_box(self) -> None:
-        """Compute box vertices in normalized space from current bed dims."""
-        if self._bed_dims is None:
+        """Compute box vertices in model-normalized space and queue for GL upload.
+
+        The bed (floor) of the box is aligned with the bottom of the loaded
+        model so the model appears sitting on the bed rather than floating.
+        All dimensions use _scale_mm so the proportions are correct.
+        """
+        if self._bed_dims is None or self._scale_mm <= 0:
             return
         bed_x, bed_y, max_z = self._bed_dims
-        max_dim = max(bed_x, bed_y, max_z)
-        # Map largest dimension → 1.0; match the STL coord convention:
-        # viewer X = STL X, viewer Y = -STL Z (up), viewer Z = STL Y
-        hx =  bed_x / max_dim
-        hy =  max_z / max_dim   # height axis
-        hz =  bed_y / max_dim   # depth axis
-        self._pending_box = _box_edge_verts(-hx, -hy, -hz, hx, hy, hz)
+        s = self._scale_mm   # 1 norm unit = s mm
+
+        # Horizontal half-extents (box centred in XZ to match the model)
+        hx = bed_x / (2.0 * s)
+        hz = bed_y / (2.0 * s)
+
+        # Vertical: viewer_Y is inverted STL-Z (positive viewer_Y = lower/bed).
+        # Place the box bed at the model's actual floor so the model touches it.
+        y_bed = self._model_y_bottom          # viewer-Y of the bed surface
+        y_top = y_bed - max_z / s             # viewer-Y of ceiling (negative = higher)
+
+        self._pending_box = _box_edge_verts(-hx, y_top, -hz, hx, y_bed, hz)
 
     def reset_view(self) -> None:
         self.rot_x = 25.0
@@ -261,12 +283,20 @@ class STLViewer(QOpenGLWidget):
     def _on_loaded(self, verts: np.ndarray, normals: np.ndarray):
         self._loading = False
 
-        # Normalize to [-1, 1]³
+        # Normalize to [-1, 1]³ and record the half-extent for box sizing.
         flat   = verts.reshape(-1, 3)
         center = (flat.max(0) + flat.min(0)) / 2
         scale  = float(np.abs(flat - center).max())
         if scale < 1e-9:
             scale = 1.0
+        self._scale_mm = scale   # 1 normalized unit = scale mm
+
+        # After axis-swap+flip the viewer Y of the model's STL floor is:
+        #   viewer_y_bottom = (center_z - z_min) / scale
+        #                   = (z_max - z_min) / (2 * scale)
+        # Store it so _queue_box can align the box bed with the model floor.
+        self._model_y_bottom = (flat[:, 2].max() - flat[:, 2].min()) / (2.0 * scale)
+
         verts = (verts - center) / scale
 
         # Z-up STL → Y-down screen convention (same as toolpath viewer)
@@ -274,18 +304,14 @@ class STLViewer(QOpenGLWidget):
         verts[:, :, 1] *= -1.0
 
         # Recompute face normals from the already-transformed vertices.
-        # Do NOT apply any additional axis-swap — normals computed here are
-        # already in screen-space coordinates.
         v0, v1, v2 = verts[:, 0], verts[:, 1], verts[:, 2]
         face_normals = np.cross(v1 - v0, v2 - v0)
         norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
         norms = np.where(norms > 1e-12, norms, 1.0)
         face_normals = (face_normals / norms).astype(np.float32)
 
-        # Fix inverted winding: after centering the model to the origin,
-        # each triangle's outward direction is (tri_center - origin) = tri_center.
-        # If dot(tri_center, face_normal) < 0 the normal points inward — swap
-        # v1/v2 to reverse winding and recompute so culling works correctly.
+        # Best-effort winding fix for convex models. Non-convex models with
+        # incorrect winding are handled in the fragment shader via gl_FrontFacing.
         tri_centers = (v0 + v1 + v2) / 3.0
         dot_check = np.einsum('ij,ij->i', tri_centers, face_normals)
         inverted = dot_check < 0
@@ -312,6 +338,10 @@ class STLViewer(QOpenGLWidget):
         vbo_data[2::3, 3:] = face_normals
 
         self._pending = vbo_data.astype(np.float32, copy=False)
+
+        # Re-queue box now that _scale_mm is known / updated.
+        self._queue_box()
+
         self.reset_view()   # also calls update()
 
     @pyqtSlot(str)
@@ -325,14 +355,15 @@ class STLViewer(QOpenGLWidget):
     def initializeGL(self):
         gl.glClearColor(0.11, 0.11, 0.14, 1.0)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_CULL_FACE)
-        gl.glCullFace(gl.GL_BACK)
+        # No GL_CULL_FACE: non-convex models need both sides rendered;
+        # the fragment shader uses gl_FrontFacing to flip normals for back faces.
 
         self._prog = QOpenGLShaderProgram(self)
         self._prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex,   _VERT)
         self._prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _FRAG)
         self._prog.link()
-        self._mvp_loc = self._prog.uniformLocation("uMVP")
+        self._mvp_loc  = self._prog.uniformLocation("uMVP")
+        self._alpha_loc = self._prog.uniformLocation("uAlpha")
 
         self._vao = QOpenGLVertexArrayObject(self)
         self._vao.create()
@@ -397,27 +428,51 @@ class STLViewer(QOpenGLWidget):
         if not self._gl_ready:
             return
 
-        mvp = self._build_mvp(self.width(), self.height())
+        # Base MVP (camera only — used for the volume box)
+        base_mvp = self._build_mvp(self.width(), self.height())
+
+        # Model MVP: scale the 3D part, then pin the model's bed-floor to the
+        # same clip-space position as the box bed so the model stays on the bed
+        # when scaled (rather than floating or sinking into it).
+        model_mvp = base_mvp.copy()
+        model_mvp[:3, :3] *= self._model_scale
+        if abs(self._model_scale - 1.0) > 1e-6 and self._model_y_bottom > 0.0:
+            anchor = np.array([0.0, self._model_y_bottom, 0.0], dtype=np.float32)
+            q = base_mvp[:3, :3] @ anchor
+            model_mvp[:3, 3] += (1.0 - self._model_scale) * q
 
         # ── Model triangles ────────────────────────────────────────────────
         if self._n_tris > 0:
+            if self._transparent:
+                gl.glEnable(gl.GL_BLEND)
+                gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+                gl.glDepthMask(gl.GL_FALSE)
+                alpha = 0.35
+            else:
+                gl.glDisable(gl.GL_BLEND)
+                gl.glDepthMask(gl.GL_TRUE)
+                alpha = 1.0
             self._prog.bind()
-            gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
+            gl.glUniform1f(self._alpha_loc, alpha)
+            gl.glUniformMatrix4fv(self._mvp_loc, 1, gl.GL_TRUE, model_mvp.flatten())
             self._vao.bind()
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, self._n_tris * 3)
             self._vao.release()
             self._prog.release()
+            if self._transparent:
+                gl.glDepthMask(gl.GL_TRUE)
 
-        # ── Print volume box ───────────────────────────────────────────────
+        # ── Print volume box (unscaled — always shows the actual bed size) ─
         if self._box_n_verts > 0 and self._box_prog is not None:
-            self._box_prog.bind()
-            gl.glUniformMatrix4fv(self._box_mvp_loc, 1, gl.GL_TRUE, mvp.flatten())
             gl.glEnable(gl.GL_BLEND)
             gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            self._box_prog.bind()
+            gl.glUniformMatrix4fv(self._box_mvp_loc, 1, gl.GL_TRUE, base_mvp.flatten())
             self._box_vao.bind()
             gl.glDrawArrays(gl.GL_LINES, 0, self._box_n_verts)
             self._box_vao.release()
             self._box_prog.release()
+            gl.glDisable(gl.GL_BLEND)   # restore — must not bleed into next frame
 
     def paintEvent(self, event):
         super().paintEvent(event)   # triggers paintGL
@@ -481,11 +536,25 @@ class STLViewer(QOpenGLWidget):
         p_x =  2.0 * self.pan_x / w
         p_y = -2.0 * self.pan_y / h
 
+        # Dynamic Z scale: compute bounding-sphere radius of the box in
+        # model-normalized space so that no corner is ever clipped regardless
+        # of how the model was scaled or how large the printer volume is.
+        z_scale = 0.2
+        if self._scale_mm > 0 and self._bed_dims is not None:
+            bed_x, bed_y, max_z_dim = self._bed_dims
+            hx = bed_x / (2.0 * self._scale_mm)
+            hz = bed_y / (2.0 * self._scale_mm)
+            hy = max(abs(self._model_y_bottom),
+                     abs(self._model_y_bottom - max_z_dim / self._scale_mm))
+            bsphere = math.sqrt(hx * hx + hy * hy + hz * hz)
+            if bsphere > 0:
+                z_scale = max(0.005, min(0.2, 0.9 / bsphere))
+
         S = np.array([
-            [s_x,  0,   0, p_x],
-            [0,   -s_y, 0, p_y],
-            [0,    0,   1, 0  ],
-            [0,    0,   0, 1  ],
+            [s_x,  0,        0,   p_x],
+            [0,   -s_y,      0,   p_y],
+            [0,    0,    z_scale, 0  ],
+            [0,    0,        0,   1  ],
         ], dtype=np.float32)
 
         return (S @ R).astype(np.float32)
@@ -540,3 +609,128 @@ class STLViewer(QOpenGLWidget):
             if path.lower().endswith(".stl"):
                 self.file_dropped.emit(path)
                 break
+
+
+# ── Public wrapper widget ─────────────────────────────────────────────────────
+
+class STLViewer(QWidget):
+    """
+    GL canvas + control bar with model-scale spinbox.
+
+    The scale slider adjusts the model size relative to the print-volume box,
+    letting you see whether a model (or a scaled version of it) fits the bed.
+    Camera zoom (scroll wheel) is independent and affects the whole scene.
+
+    Public API (unchanged from before):
+      load_stl(path)
+      set_print_volume(bed_x, bed_y, max_z)
+      clear()
+      reset_view()
+      file_dropped  — signal(str)
+    """
+
+    file_dropped = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 320)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self._gl = _STLViewerGL(self)
+        self._gl.file_dropped.connect(self.file_dropped)
+        root.addWidget(self._gl, stretch=1)
+
+        # ── Control bar ───────────────────────────────────────────────────────
+        bar = QWidget()
+        bar.setFixedHeight(30)
+        bar.setStyleSheet("background: #161820;")
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(8, 2, 8, 2)
+        bl.setSpacing(6)
+
+        lbl = QLabel("Scale:")
+        lbl.setStyleSheet("color: #779; font-size: 11px;")
+        bl.addWidget(lbl)
+
+        self._scale_spin = QDoubleSpinBox()
+        loc = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
+        self._scale_spin.setLocale(loc)
+        self._scale_spin.setRange(1.0, 500.0)
+        self._scale_spin.setSingleStep(10.0)
+        self._scale_spin.setDecimals(0)
+        self._scale_spin.setSuffix(" %")
+        self._scale_spin.setValue(100.0)
+        self._scale_spin.setFixedWidth(72)
+        self._scale_spin.setToolTip(
+            "Scale the model relative to the print-volume box.\n"
+            "100% = STL file dimensions. Camera zoom (scroll) is separate."
+        )
+        self._scale_spin.setStyleSheet(
+            "QDoubleSpinBox { background: #1e2030; color: #ccd; "
+            "border: 1px solid #334; font-size: 11px; padding: 1px 3px; }"
+        )
+        bl.addWidget(self._scale_spin)
+
+        reset_btn = QPushButton("100%")
+        reset_btn.setFixedSize(36, 20)
+        reset_btn.setStyleSheet(
+            "QPushButton { font-size: 10px; padding: 0; color: #99b; "
+            "background: transparent; border: none; }"
+            "QPushButton:hover { color: #ccf; }"
+        )
+        reset_btn.setToolTip("Reset scale to 100%")
+        reset_btn.clicked.connect(self._reset_scale)
+        bl.addWidget(reset_btn)
+
+        bl.addStretch()
+
+        self._transparent_check = QCheckBox("Transparent")
+        self._transparent_check.setChecked(False)
+        self._transparent_check.setStyleSheet(
+            "QCheckBox { color: #779; font-size: 11px; }"
+            "QCheckBox::indicator { width: 13px; height: 13px; }"
+        )
+        self._transparent_check.setToolTip("Show model as semi-transparent (useful for inspecting geometry)")
+        bl.addWidget(self._transparent_check)
+
+        root.addWidget(bar)
+
+        self._scale_spin.valueChanged.connect(self._on_scale_changed)
+        self._transparent_check.toggled.connect(self._on_transparent_changed)
+
+    # ── Scale control ─────────────────────────────────────────────────────────
+
+    @property
+    def model_scale(self) -> float:
+        """Current model scale as a fraction (1.0 = 100%).
+        Used by the slicer to physically scale the STL before slicing."""
+        return self._scale_spin.value() / 100.0
+
+    def _on_scale_changed(self, pct: float) -> None:
+        self._gl._model_scale = pct / 100.0
+        self._gl.update()
+
+    def _reset_scale(self) -> None:
+        self._scale_spin.setValue(100.0)
+
+    def _on_transparent_changed(self, checked: bool) -> None:
+        self._gl._transparent = checked
+        self._gl.update()
+
+    # ── Proxy API ─────────────────────────────────────────────────────────────
+
+    def load_stl(self, path: str) -> None:
+        self._gl.load_stl(path)
+
+    def clear(self) -> None:
+        self._gl.clear()
+
+    def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
+        self._gl.set_print_volume(bed_x, bed_y, max_z)
+
+    def reset_view(self) -> None:
+        self._gl.reset_view()

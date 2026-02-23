@@ -469,9 +469,12 @@ class MeshVaseSlicer:
 
                 f.write("Configuration:\n")
                 for section, values in config.items():
-                    f.write(f"  [{section}]\n")
-                    for key, value in values.items():
-                        f.write(f"    {key}: {value}\n")
+                    if isinstance(values, dict):
+                        f.write(f"  [{section}]\n")
+                        for key, value in values.items():
+                            f.write(f"    {key}: {value}\n")
+                    else:
+                        f.write(f"  {section}: {values}\n")
 
             logger.info(f"Saved log: {log_path}")
         except IOError as e:

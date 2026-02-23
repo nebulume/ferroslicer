@@ -80,6 +80,16 @@ class SlicerWorker(QThread):
             model = STLParser.parse(self.stl_path)
             slicer._validate_model(model, interactive=False)
 
+            # Apply model scale (set in STL viewer; default 1.0 = no change)
+            model_scale = float(self.config_overrides.get("model_scale", 1.0))
+            if abs(model_scale - 1.0) > 1e-6:
+                for tri in model.triangles:
+                    for v in (tri.vertex1, tri.vertex2, tri.vertex3):
+                        v.x *= model_scale
+                        v.y *= model_scale
+                        v.z *= model_scale
+                model._bounds = None   # invalidate cached bounding box
+
             # ── stage 2: geometry analysis ────────────────────────────────────
             self.progress.emit(30, f"Analysing geometry ({len(model.triangles):,} triangles)…")
             analyzer = GeometryAnalyzer(
