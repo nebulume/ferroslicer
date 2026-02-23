@@ -32,7 +32,9 @@ class GCodeGenerator:
         max_volumetric_speed: float = 12.0,
         skirt_enabled: bool = True,
         skirt_distance: float = 0.0,
-        skirt_height: int = 1
+        skirt_height: int = 1,
+        start_gcode_override: str = "",
+        end_gcode_override: str = "",
     ):
         """
         Initialize GCode generator.
@@ -63,6 +65,8 @@ class GCodeGenerator:
         self.skirt_enabled = skirt_enabled
         self.skirt_distance = skirt_distance
         self.skirt_height = skirt_height
+        self.start_gcode_override = start_gcode_override
+        self.end_gcode_override = end_gcode_override
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -176,17 +180,26 @@ class GCodeGenerator:
         self.gcode_lines.append("")
 
     def _add_start_gcode(self) -> None:
-        """Add start GCode."""
+        """Add start GCode — uses custom override if provided."""
         self.gcode_lines.append("; --- START GCODE ---")
-        self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=bed_temp VALUE={self.bed_temp}")
-        self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=extruder_temp VALUE={self.nozzle_temp}")
-        
-        # Convert fan_speed (0-100%) to PWM value (0-255)
-        pwm_value = int((self.fan_speed / 100.0) * 255)
-        pwm_value = max(0, min(255, pwm_value))  # Clamp to 0-255
-        self.gcode_lines.append(f"M106 S{pwm_value}")
-        
-        self.gcode_lines.append("START_PRINT")
+        if self.start_gcode_override.strip():
+            # User-provided start gcode (supports {bed_temp} / {nozzle_temp} placeholders)
+            pwm_value = max(0, min(255, int((self.fan_speed / 100.0) * 255)))
+            rendered = (
+                self.start_gcode_override
+                .replace("{bed_temp}", str(int(self.bed_temp)))
+                .replace("{nozzle_temp}", str(int(self.nozzle_temp)))
+                .replace("{fan_speed}", str(pwm_value))
+            )
+            for line in rendered.splitlines():
+                self.gcode_lines.append(line)
+        else:
+            # Default Klipper macro start sequence
+            self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=bed_temp VALUE={self.bed_temp}")
+            self.gcode_lines.append(f"SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=extruder_temp VALUE={self.nozzle_temp}")
+            pwm_value = max(0, min(255, int((self.fan_speed / 100.0) * 255)))
+            self.gcode_lines.append(f"M106 S{pwm_value}")
+            self.gcode_lines.append("START_PRINT")
         self.gcode_lines.append("")
         self.gcode_lines.append("; Absolute positioning for X/Y/Z, relative for E")
         self.gcode_lines.append("G90")
@@ -542,27 +555,26 @@ class GCodeGenerator:
         self.current_position = target
 
     def _add_end_gcode(self) -> None:
-        """Add end GCode with retract, Z raise, and safe park position."""
+        """Add end GCode — uses custom override if provided."""
         self.gcode_lines.append("")
         self.gcode_lines.append("; --- END GCODE ---")
-        self.gcode_lines.append("; Retract filament to prevent oozing")
-        self.gcode_lines.append("G10")
-        
-        # Raise Z by 10mm to clear the print
-        z_raise = 10.0
-        new_z = self.current_position.z + z_raise
-        self.gcode_lines.append(f"; Raise Z by {z_raise}mm to clear print")
-        self.gcode_lines.append(f"G1 Z{new_z:.3f} F{self.travel_speed * 60:.0f}")
-        self.current_position.z = new_z
-        
-        # Move to safe corner (219, 219)
-        self.gcode_lines.append("; Move to safe corner")
-        self.gcode_lines.append(f"G1 X219.000 Y219.000 F{self.travel_speed * 60:.0f}")
-        self.current_position.x = 219.0
-        self.current_position.y = 219.0
-        
-        self.gcode_lines.append("")
-        self.gcode_lines.append("END_PRINT")
+        if self.end_gcode_override.strip():
+            for line in self.end_gcode_override.splitlines():
+                self.gcode_lines.append(line)
+        else:
+            self.gcode_lines.append("; Retract filament to prevent oozing")
+            self.gcode_lines.append("G10")
+            z_raise = 10.0
+            new_z = self.current_position.z + z_raise
+            self.gcode_lines.append(f"; Raise Z by {z_raise}mm to clear print")
+            self.gcode_lines.append(f"G1 Z{new_z:.3f} F{self.travel_speed * 60:.0f}")
+            self.current_position.z = new_z
+            self.gcode_lines.append("; Move to safe corner")
+            self.gcode_lines.append(f"G1 X219.000 Y219.000 F{self.travel_speed * 60:.0f}")
+            self.current_position.x = 219.0
+            self.current_position.y = 219.0
+            self.gcode_lines.append("")
+            self.gcode_lines.append("END_PRINT")
 
     def _calculate_centering_offset(
         self,

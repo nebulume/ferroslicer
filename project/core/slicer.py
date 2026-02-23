@@ -150,7 +150,9 @@ class MeshVaseSlicer:
             max_volumetric_speed=merged_config.get("print_settings", {}).get("max_volumetric_speed", 12.0),
             skirt_enabled=merged_config.get("print_settings", {}).get("skirt_enabled", True),
             skirt_distance=merged_config.get("print_settings", {}).get("skirt_distance", 0.0),
-            skirt_height=merged_config.get("print_settings", {}).get("skirt_height", 1)
+            skirt_height=merged_config.get("print_settings", {}).get("skirt_height", 1),
+            start_gcode_override=merged_config.get("custom_gcode", {}).get("start_gcode", ""),
+            end_gcode_override=merged_config.get("custom_gcode", {}).get("end_gcode", ""),
         )
 
         # If vase mode (spiral) requested, build continuous spiral path

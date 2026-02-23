@@ -1,8 +1,11 @@
 '''
 STL file parser with validation and manifold checking.
+Supports both ASCII and binary STL formats (binary is ~100x faster for large files).
 '''
 
+import os
 import struct
+from pathlib import Path
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 from .exceptions import ProjectError
@@ -195,12 +198,13 @@ class STLModel:
 
 
 class STLParser:
-    """Parser for ASCII STL files."""
+    """Parser for ASCII and binary STL files. Auto-detects format."""
 
     @staticmethod
     def parse(file_path: str) -> STLModel:
         """
-        Parse ASCII STL file.
+        Parse STL file — auto-detects binary vs ASCII.
+        Binary STL is parsed with numpy for maximum speed.
 
         Args:
             file_path: Path to STL file
@@ -211,13 +215,126 @@ class STLParser:
         Raises:
             ProjectError: If file cannot be read or is invalid
         """
+        if not os.path.exists(file_path):
+            raise ProjectError(f"STL file not found: {file_path}")
+
+        if STLParser._is_binary(file_path):
+            logger.info(f"Detected binary STL: {file_path}")
+            return STLParser._parse_binary(file_path)
+
+        logger.info(f"Detected ASCII STL: {file_path}")
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         except IOError as e:
             raise ProjectError(f"Cannot read STL file: {e}")
-
         return STLParser._parse_ascii(file_path, content)
+
+    @staticmethod
+    def _is_binary(file_path: str) -> bool:
+        """
+        Detect binary STL by comparing expected file size vs actual.
+        Binary STL: header(80) + count(4) + n_triangles * 50 bytes.
+        """
+        try:
+            file_size = os.path.getsize(file_path)
+            with open(file_path, 'rb') as f:
+                header = f.read(80)
+                # If the first 5 bytes are 'solid' and followed by a space/newline
+                # it's likely ASCII — but binary STLs can also start with 'solid'
+                count_bytes = f.read(4)
+                if len(count_bytes) < 4:
+                    return False
+                n = struct.unpack('<I', count_bytes)[0]
+                expected = 84 + n * 50
+                return abs(file_size - expected) < 200 and n < 50_000_000
+        except Exception:
+            return False
+
+    @staticmethod
+    def _parse_binary(file_path: str) -> STLModel:
+        """Parse binary STL — tries Rust first, then numpy, then pure Python."""
+        try:
+            import slicer_core as _rust
+            with open(file_path, 'rb') as f:
+                raw = f.read()
+            normals_flat, v0_flat, v1_flat, v2_flat = _rust.parse_binary_stl(raw)
+            n = len(normals_flat) // 3
+            triangles = []
+            for i in range(n):
+                triangles.append(Triangle(
+                    normal=Vector3(normals_flat[i*3], normals_flat[i*3+1], normals_flat[i*3+2]),
+                    vertex1=Vector3(v0_flat[i*3], v0_flat[i*3+1], v0_flat[i*3+2]),
+                    vertex2=Vector3(v1_flat[i*3], v1_flat[i*3+1], v1_flat[i*3+2]),
+                    vertex3=Vector3(v2_flat[i*3], v2_flat[i*3+1], v2_flat[i*3+2]),
+                ))
+            model_name = Path(file_path).stem
+            return STLModel(model_name, triangles)
+        except Exception:
+            pass
+
+        try:
+            import numpy as np
+        except ImportError:
+            # Fall back to slow struct-based binary parse
+            return STLParser._parse_binary_slow(file_path)
+
+        try:
+            with open(file_path, 'rb') as f:
+                f.read(80)  # header
+                n_tris = struct.unpack('<I', f.read(4))[0]
+                raw = f.read(n_tris * 50)
+
+            # Binary STL record: 3 floats normal + 9 floats verts + uint16 attr (50 bytes total)
+            dtype = np.dtype([
+                ('normal', np.float32, (3,)),
+                ('v0',     np.float32, (3,)),
+                ('v1',     np.float32, (3,)),
+                ('v2',     np.float32, (3,)),
+                ('attr',   np.uint16),
+            ])
+            data = np.frombuffer(raw, dtype=dtype)
+
+            triangles = []
+            for row in data:
+                triangles.append(Triangle(
+                    normal=Vector3(float(row['normal'][0]), float(row['normal'][1]), float(row['normal'][2])),
+                    vertex1=Vector3(float(row['v0'][0]), float(row['v0'][1]), float(row['v0'][2])),
+                    vertex2=Vector3(float(row['v1'][0]), float(row['v1'][1]), float(row['v1'][2])),
+                    vertex3=Vector3(float(row['v2'][0]), float(row['v2'][1]), float(row['v2'][2])),
+                ))
+
+            if not triangles:
+                raise ProjectError("Binary STL contains no triangles")
+
+            model_name = Path(file_path).stem
+            return STLModel(model_name, triangles)
+
+        except ProjectError:
+            raise
+        except Exception as e:
+            raise ProjectError(f"Failed to parse binary STL: {e}")
+
+    @staticmethod
+    def _parse_binary_slow(file_path: str) -> STLModel:
+        """struct-based fallback binary parser (no numpy required)."""
+        try:
+            with open(file_path, 'rb') as f:
+                f.read(80)
+                n_tris = struct.unpack('<I', f.read(4))[0]
+                triangles = []
+                for _ in range(n_tris):
+                    data = struct.unpack('<3f 3f 3f 3f H', f.read(50))
+                    triangles.append(Triangle(
+                        normal=Vector3(data[0], data[1], data[2]),
+                        vertex1=Vector3(data[3], data[4], data[5]),
+                        vertex2=Vector3(data[6], data[7], data[8]),
+                        vertex3=Vector3(data[9], data[10], data[11]),
+                    ))
+            model_name = Path(file_path).stem
+            return STLModel(model_name, triangles)
+        except Exception as e:
+            raise ProjectError(f"Failed to parse binary STL: {e}")
 
     @staticmethod
     def _parse_ascii(file_path: str, content: str) -> STLModel:
