@@ -4,15 +4,16 @@ Print history dialog — table of all slicing jobs with settings and status.
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QMessageBox, QTextEdit, QSplitter,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import db.print_db as pdb
 
@@ -42,7 +43,7 @@ class PrintHistoryDialog(QDialog):
 
         # ── Jobs table ───────────────────────────────────────────────────────
         left = QVBoxLayout()
-        left_w = __import__('PyQt6.QtWidgets', fromlist=['QWidget']).QWidget()
+        left_w = QWidget()
         left_w.setLayout(left)
 
         self.table = QTableWidget(0, 5)
@@ -69,7 +70,7 @@ class PrintHistoryDialog(QDialog):
 
         # ── Detail panel ─────────────────────────────────────────────────────
         right = QVBoxLayout()
-        right_w = __import__('PyQt6.QtWidgets', fromlist=['QWidget']).QWidget()
+        right_w = QWidget()
         right_w.setLayout(right)
 
         right.addWidget(QLabel("Settings used:"))

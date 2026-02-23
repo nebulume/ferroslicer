@@ -184,6 +184,10 @@ class GCodeGenerator:
                 # Pre-compute extrusion factor (constant per segment)
                 e_factor = (lh * ew) / fcs
 
+                # First-layer speed: slow down everything within the first layer height
+                first_layer_z_thresh = zs[0] + lh   # anything at/below this is "first layer"
+                spd_f_first = int(spd * self.first_layer_speed_pct / 100.0 * 60)
+
                 cx = float(self.current_position.x)
                 cy = float(self.current_position.y)
                 cz = float(self.current_position.z)
@@ -202,8 +206,9 @@ class GCodeGenerator:
                     if seg_len > 0.001:
                         extrusion = seg_len * e_factor
                         total_e += extrusion
+                        f_val = spd_f_first if zs[i] <= first_layer_z_thresh else spd_f
                         lines.append(
-                            f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{spd_f}"
+                            f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
                         )
                     cx, cy, cz = tx, ty, tz
 

@@ -4,15 +4,14 @@
     "debug": false,
     "output_dir": "output",
     "printer": {
-        "build_volume": [220, 220, 280],
         "nozzle_diameter": 1.0,
         "nozzle_temp": 240,
-        "bed_temp": 65,
-        "filament_diameter": 1.75
+        "bed_temp": 65
     },
     "print_settings": {
         "layer_height": 0.5,
         "print_speed": 8,
+        "first_layer_speed_pct": 50,
         "travel_speed": 40,
         "fan_speed": 100,
         "max_volumetric_speed": 12.0,

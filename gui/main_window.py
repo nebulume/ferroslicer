@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self._gcode_path:  str = ""
         self._app_settings: dict = load_app_settings()
         self._slicer_worker: SlicerWorker = None
+        self._last_generated_settings: str = ""   # JSON snapshot of settings at last gen
         self._klipper_timer = QTimer(self)
         self._klipper_timer.setInterval(5000)
         self._klipper_timer.timeout.connect(self._poll_klipper)
@@ -424,6 +425,7 @@ class MainWindow(QMainWindow):
     def _load_stl(self, path: str):
         self._stl_path  = path
         self._gcode_path = ""
+        self._last_generated_settings = ""   # new STL → reset dirty state
         self.toolpath_viewer.clear()
         self.stl_viewer.load_stl(path)
         self.preview_tabs.setCurrentIndex(self.TAB_MODEL)
@@ -524,6 +526,10 @@ class MainWindow(QMainWindow):
         self._gcode_chip.set_path(gcode_path)
         self.status_file_lbl.setText(f"Generated: {Path(gcode_path).name}")
         self._append_log("INFO", f"GCode saved: {Path(gcode_path).name}")
+
+        # Snapshot settings so the Generate button goes grey (up-to-date)
+        self._last_generated_settings = self._settings_snapshot()
+        self._refresh_generate_btn_style()
 
         overrides = self.settings_panel.get_config_overrides()
         ip = self._app_settings.get("printer_ip", "")
@@ -650,6 +656,38 @@ class MainWindow(QMainWindow):
         max_z = float(profile.get("max_z", 280))
         self.stl_viewer.set_print_volume(bed_x, bed_y, max_z)
         self.toolpath_viewer.set_print_volume(bed_x, bed_y, max_z)
+        self._refresh_generate_btn_style()
+
+    def _settings_snapshot(self) -> str:
+        """Stable JSON string of current settings for dirty-state comparison."""
+        import json as _json
+        cfg = self.settings_panel.get_config_overrides()
+        return _json.dumps(cfg, sort_keys=True)
+
+    def _refresh_generate_btn_style(self):
+        """Grey out Generate button when settings match last generation; blue when dirty."""
+        if not self._last_generated_settings:
+            # No generation yet — always show blue if a file is loaded
+            self.generate_btn.setStyleSheet(
+                "QPushButton { background: #2a5298; color: white; border-radius: 4px; font-weight: bold; }"
+                "QPushButton:hover { background: #3a62a8; }"
+                "QPushButton:disabled { background: #333; color: #666; }"
+            )
+            return
+        dirty = (self._settings_snapshot() != self._last_generated_settings)
+        if dirty:
+            self.generate_btn.setStyleSheet(
+                "QPushButton { background: #2a5298; color: white; border-radius: 4px; font-weight: bold; }"
+                "QPushButton:hover { background: #3a62a8; }"
+                "QPushButton:disabled { background: #333; color: #666; }"
+            )
+        else:
+            self.generate_btn.setStyleSheet(
+                "QPushButton { background: #2a2e3a; color: #667; border-radius: 4px; font-weight: bold;"
+                " border: 1px solid #3a3e50; }"
+                "QPushButton:hover { background: #32364a; color: #99a; }"
+                "QPushButton:disabled { background: #333; color: #666; }"
+            )
 
     def _update_controls(self):
         has_file  = bool(self._stl_path)

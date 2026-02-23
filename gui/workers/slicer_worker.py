@@ -145,6 +145,7 @@ class SlicerWorker(QThread):
                 start_gcode_override=merged.get("custom_gcode", {}).get("start_gcode", ""),
                 end_gcode_override=merged.get("custom_gcode", {}).get("end_gcode", ""),
                 first_layer_squish=ps.get("first_layer_squish", 15.0),
+                first_layer_speed_pct=ps.get("first_layer_speed_pct", 50),
                 firmware=merged.get("printer_profile", {}).get("firmware", "klipper"),
                 retract_dist=merged.get("printer_profile", {}).get("retract_dist", 0.8),
                 retract_speed=merged.get("printer_profile", {}).get("retract_speed", 40.0),

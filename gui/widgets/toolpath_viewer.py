@@ -398,7 +398,7 @@ class _ToolpathGL(QOpenGLWidget):
     def clear(self) -> None:
         self._n_verts = self._seam_n_verts = 0
         self._segments = []
-        self._loading = self._error == "" and False
+        self._loading = False
         self._error = self._label = ""
         self._pending = self._pending_seam = None
         self._pending_segments = []
@@ -826,10 +826,10 @@ class ToolpathViewer(QWidget):
 
         # ── Control bar ───────────────────────────────────────────────────────
         bar = QWidget()
-        bar.setFixedHeight(30)
+        bar.setFixedHeight(39)
         bar.setStyleSheet("background: #161820;")
         bl = QHBoxLayout(bar)
-        bl.setContentsMargins(8, 2, 8, 2)
+        bl.setContentsMargins(8, 3, 14, 3)   # 14px right padding so last widget breathes
         bl.setSpacing(6)
 
         lbl = QLabel("Layers:")
@@ -837,30 +837,30 @@ class ToolpathViewer(QWidget):
         lbl.setFixedWidth(46)
         bl.addWidget(lbl)
 
-        bl.addWidget(self._lbl("Bot"))
+        bl.addWidget(self._lbl("bot"))
         self._lo = QSlider(Qt.Orientation.Horizontal)
         self._lo.setRange(0, 1000)
         self._lo.setValue(0)
-        self._lo.setFixedHeight(18)
+        self._lo.setFixedHeight(20)
         self._lo.setToolTip("Bottom of visible height range (0.1 % steps)")
         bl.addWidget(self._lo)
 
-        bl.addWidget(self._lbl("Top"))
+        bl.addWidget(self._lbl("top"))
         self._hi = QSlider(Qt.Orientation.Horizontal)
         self._hi.setRange(0, 1000)
         self._hi.setValue(1000)
-        self._hi.setFixedHeight(18)
+        self._hi.setFixedHeight(20)
         self._hi.setToolTip("Top of visible height range (0.1 % steps)")
         bl.addWidget(self._hi)
 
         self._range_lbl = QLabel("0.0 – 100.0%")
-        self._range_lbl.setStyleSheet("color: #88a; font-size: 10px;")
-        self._range_lbl.setFixedWidth(82)
+        self._range_lbl.setStyleSheet("color: #88a; font-size: 10px; padding-right: 4px;")
+        self._range_lbl.setFixedWidth(90)
         self._range_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bl.addWidget(self._range_lbl)
 
         all_btn = QPushButton("All")
-        all_btn.setFixedSize(32, 20)
+        all_btn.setFixedSize(32, 22)
         all_btn.setStyleSheet("QPushButton{font-size:10px;padding:0;color:#99b;}"
                               "QPushButton:hover{color:#ccf;}")
         all_btn.setToolTip("Show all layers")
@@ -875,7 +875,7 @@ class ToolpathViewer(QWidget):
         self._seam_chk.setChecked(True)
         self._seam_chk.setStyleSheet(
             "QCheckBox { color: #f8851a; font-size: 10px; }"
-            "QCheckBox::indicator { width:12px; height:12px; }"
+            "QCheckBox::indicator { width:13px; height:13px; }"
         )
         self._seam_chk.setToolTip(
             "Show orange dots where each revolution completes\n"
