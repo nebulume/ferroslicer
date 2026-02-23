@@ -63,8 +63,7 @@ class MeshVaseSlicer:
 
         # Parse STL
         logger.info("Parsing STL...")
-        parser = STLParser()
-        model = parser.parse(stl_file)
+        model = STLParser.parse(stl_file)
 
         # Validate model (interactive=False for direct slicing)
         self._validate_model(model, interactive=False)
@@ -160,25 +159,11 @@ class MeshVaseSlicer:
         if merged_config.get("print_settings", {}).get("vase_mode"):
             logger.info("Building spiral path for vase mode...")
             ppd = merged_config.get("print_settings", {}).get("spiral_points_per_degree", 1.2)
-            # Optional spiral tuning parameters (smoothing and adaptive resampling)
-            target_samples = merged_config.get("print_settings", {}).get("target_samples_per_wave", None)
-            smoothing_window = merged_config.get("print_settings", {}).get("smoothing_window_size", None)
-            smoothing_threshold = merged_config.get("print_settings", {}).get("smoothing_move_threshold", None)
-            auto_resample = merged_config.get("print_settings", {}).get("auto_resample_spiral", None)
+            target_samples = merged_config.get("print_settings", {}).get("target_samples_per_wave", 16)
+            smoothing_window = merged_config.get("print_settings", {}).get("smoothing_window_size", 3)
+            smoothing_threshold = merged_config.get("print_settings", {}).get("smoothing_move_threshold", 0.5)
+            auto_resample = merged_config.get("print_settings", {}).get("auto_resample_spiral", True)
 
-            spiral_gen = SpiralGenerator(
-                analyzer.layers,
-                layer_height=merged_config["print_settings"]["layer_height"],
-                points_per_degree=ppd,
-                smoothing_window_size=smoothing_window if smoothing_window is not None else 3,
-                smoothing_move_threshold=smoothing_threshold if smoothing_threshold is not None else 0.5,
-                target_samples_per_wave=target_samples if target_samples is not None else 16,
-                auto_resample_spiral=(auto_resample if auto_resample is not None else True)
-            )
-
-            spiral_points = spiral_gen.generate_spiral_path()
-
-            # Apply waves to spiral with layer alternation
             wave_amp = merged_config["mesh_settings"].get("wave_amplitude", 2.0)
             wave_count = merged_config["mesh_settings"].get("wave_count")
             wave_spacing = merged_config["mesh_settings"].get("wave_spacing")
@@ -189,19 +174,56 @@ class MeshVaseSlicer:
             wave_asymmetry_intensity = merged_config["mesh_settings"].get("wave_asymmetry_intensity", 100)
             seam_shift = merged_config["mesh_settings"].get("seam_shift", 0.0)
 
-            modified_spiral = spiral_gen.apply_wave_to_spiral(
-                spiral_points,
-                wave_amplitude=wave_amp,
-                wave_count=wave_count,
-                wave_spacing=wave_spacing,
-                wave_pattern=wave_pattern,
-                layer_alternation=layer_alt,
-                phase_offset=phase_offset,
-                wave_asymmetry=wave_asymmetry,
-                wave_asymmetry_intensity=wave_asymmetry_intensity,
-                base_integrity_manager=base_mgr,
-                seam_shift=seam_shift
+            # Compute waves_per_rev (same logic as apply_wave_to_spiral)
+            if wave_count:
+                waves_per_rev = float(wave_count)
+            elif wave_spacing and wave_spacing > 0 and analyzer.layers:
+                avg_perimeter = analyzer.layers[0].calculate_perimeter_length()
+                waves_per_rev = avg_perimeter / wave_spacing if avg_perimeter > 0 else 0.0
+            else:
+                waves_per_rev = 0.0
+
+            spiral_gen = SpiralGenerator(
+                analyzer.layers,
+                layer_height=merged_config["print_settings"]["layer_height"],
+                points_per_degree=ppd,
+                smoothing_window_size=smoothing_window,
+                smoothing_move_threshold=smoothing_threshold,
+                target_samples_per_wave=target_samples,
+                auto_resample_spiral=auto_resample,
             )
+
+            # Use Rust fast-path when available (generates + applies waves in one call)
+            from .spiral_generator import _HAS_RUST as _SPIRAL_HAS_RUST
+            if _SPIRAL_HAS_RUST:
+                logger.info("Using Rust spiral generator (fastest)")
+                modified_spiral = spiral_gen._generate_spiral_rust(
+                    wave_amplitude=wave_amp,
+                    waves_per_rev=waves_per_rev,
+                    wave_pattern=wave_pattern,
+                    layer_alternation=layer_alt,
+                    phase_offset=phase_offset,
+                    seam_shift=seam_shift,
+                    base_integrity_manager=base_mgr,
+                    wave_asymmetry=wave_asymmetry,
+                    wave_asymmetry_intensity=wave_asymmetry_intensity,
+                )
+            else:
+                logger.info("Using Python spiral generator (Rust unavailable)")
+                spiral_points = spiral_gen.generate_spiral_path()
+                modified_spiral = spiral_gen.apply_wave_to_spiral(
+                    spiral_points,
+                    wave_amplitude=wave_amp,
+                    wave_count=wave_count,
+                    wave_spacing=wave_spacing,
+                    wave_pattern=wave_pattern,
+                    layer_alternation=layer_alt,
+                    phase_offset=phase_offset,
+                    wave_asymmetry=wave_asymmetry,
+                    wave_asymmetry_intensity=wave_asymmetry_intensity,
+                    base_integrity_manager=base_mgr,
+                    seam_shift=seam_shift,
+                )
 
             gcode_content = gcode_gen.generate_gcode(
                 [],

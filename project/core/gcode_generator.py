@@ -119,38 +119,75 @@ class GCodeGenerator:
 
         # If spiral points provided, generate continuous spiral GCode
         if spiral_points:
-            # Calculate total path length for spiral
-            total_path_length = 0.0
-            for i in range(len(spiral_points) - 1):
-                p1 = spiral_points[i].position
-                p2 = spiral_points[i + 1].position
-                dx = p2.x - p1.x
-                dy = p2.y - p1.y
-                dz = p2.z - p1.z
-                total_path_length += math.sqrt(dx * dx + dy * dy + dz * dz)
-
-            # Unretract before print
             self.gcode_lines.append("; --- UNRETRACT BEFORE PRINT (SPIRAL) ---")
             self.gcode_lines.append("G11")
             self.gcode_lines.append("")
 
-            # Move to first point as travel
-            first_pos = spiral_points[0].position
-            first_target = Vector3(first_pos.x + offset.x, first_pos.y + offset.y, first_pos.z + offset.z)
-            self._add_move(first_target, extrusion_amount=0.0, is_travel=True)
+            # Fast path for RustSpiralPoints: work on raw flat arrays to avoid
+            # allocating 600k Python objects in the inner loop.
+            from .spiral_generator import RustSpiralPoints as _RSP
+            if isinstance(spiral_points, _RSP):
+                xs = spiral_points._xs
+                ys = spiral_points._ys
+                zs = spiral_points._zs
+                ox = offset.x
+                oy = offset.y
+                oz = offset.z
+                lh = self.layer_height
+                ew = self.extrusion_width
+                fcs = self.filament_cross_section
+                spd = self.print_speed
+                spd_f = int(spd * 60)
+                tv_f = int(self.travel_speed * 60)
 
-            # Iterate spiral segments
-            for idx in range(len(spiral_points) - 1):
-                p_curr = spiral_points[idx].position
-                p_next = spiral_points[idx + 1].position
-                target = Vector3(p_next.x + offset.x, p_next.y + offset.y, p_next.z + offset.z)
-                seg_dx = target.x - self.current_position.x
-                seg_dy = target.y - self.current_position.y
-                seg_dz = target.z - self.current_position.z
-                seg_len = math.sqrt(seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz)
-                extrusion = self._calculate_extrusion(seg_len)
-                # Continuous spiral: always extrude (no retractions)
-                self._add_move(target, extrusion_amount=extrusion)
+                # Travel to first point
+                first_target = Vector3(xs[0] + ox, ys[0] + oy, zs[0] + oz)
+                self._add_move(first_target, extrusion_amount=0.0, is_travel=True)
+
+                # Pre-compute extrusion factor (constant per segment)
+                e_factor = (lh * ew) / fcs
+
+                cx = float(self.current_position.x)
+                cy = float(self.current_position.y)
+                cz = float(self.current_position.z)
+                total_e = self.current_extrusion
+
+                n = len(xs)
+                lines = self.gcode_lines
+                for i in range(1, n):
+                    tx = xs[i] + ox
+                    ty = ys[i] + oy
+                    tz = zs[i] + oz
+                    seg_dx = tx - cx
+                    seg_dy = ty - cy
+                    seg_dz = tz - cz
+                    seg_len = math.sqrt(seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz)
+                    if seg_len > 0.001:
+                        extrusion = seg_len * e_factor
+                        total_e += extrusion
+                        lines.append(
+                            f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{spd_f}"
+                        )
+                    cx, cy, cz = tx, ty, tz
+
+                self.current_position = Vector3(cx, cy, cz)
+                self.current_extrusion = total_e
+
+            else:
+                # Legacy path for regular SpiralPoint lists
+                first_pos = spiral_points[0].position
+                first_target = Vector3(first_pos.x + offset.x, first_pos.y + offset.y, first_pos.z + offset.z)
+                self._add_move(first_target, extrusion_amount=0.0, is_travel=True)
+
+                for idx in range(len(spiral_points) - 1):
+                    p_next = spiral_points[idx + 1].position
+                    target = Vector3(p_next.x + offset.x, p_next.y + offset.y, p_next.z + offset.z)
+                    seg_dx = target.x - self.current_position.x
+                    seg_dy = target.y - self.current_position.y
+                    seg_dz = target.z - self.current_position.z
+                    seg_len = math.sqrt(seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz)
+                    extrusion = self._calculate_extrusion(seg_len)
+                    self._add_move(target, extrusion_amount=extrusion)
 
         else:
             # Calculate total path length for extrusion
@@ -240,18 +277,32 @@ class GCodeGenerator:
         # Find the center of the first layer/revolution to place purge outside
         if spiral_points:
             # Get first revolution points to find centroid
-            first_rev = [p for p in spiral_points if p.revolution < 1.0]
-            if first_rev:
-                cx = sum(p.position.x for p in first_rev) / len(first_rev) + offset.x
-                cy = sum(p.position.y for p in first_rev) / len(first_rev) + offset.y
-                # Find the rightmost point (maximum X) on the perimeter
-                max_x = max(p.position.x + offset.x for p in first_rev)
+            # Fast path: RustSpiralPoints exposes raw arrays
+            from .spiral_generator import RustSpiralPoints as _RSP
+            if isinstance(spiral_points, _RSP):
+                revs = spiral_points._revs
+                cut = next((i for i, r in enumerate(revs) if r >= 1.0), len(revs))
+                if cut > 0:
+                    xs_r = spiral_points._xs[:cut]
+                    ys_r = spiral_points._ys[:cut]
+                    cx = sum(xs_r) / cut + offset.x
+                    cy = sum(ys_r) / cut + offset.y
+                    max_x = max(xs_r) + offset.x
+                else:
+                    cx = spiral_points._xs[0] + offset.x
+                    cy = spiral_points._ys[0] + offset.y
+                    max_x = cx
             else:
-                # Fallback if no first revolution
-                first_print_pos = spiral_points[0].position
-                cx = first_print_pos.x + offset.x
-                cy = first_print_pos.y + offset.y
-                max_x = cx
+                first_rev = [p for p in spiral_points if p.revolution < 1.0]
+                if first_rev:
+                    cx = sum(p.position.x for p in first_rev) / len(first_rev) + offset.x
+                    cy = sum(p.position.y for p in first_rev) / len(first_rev) + offset.y
+                    max_x = max(p.position.x + offset.x for p in first_rev)
+                else:
+                    first_print_pos = spiral_points[0].position
+                    cx = first_print_pos.x + offset.x
+                    cy = first_print_pos.y + offset.y
+                    max_x = cx
         else:
             # Fallback to first layer point
             first_layer = wave_points_by_layer[0]
@@ -315,21 +366,32 @@ class GCodeGenerator:
         self.gcode_lines.append(f"; Single circular loop parallel to spiral start, {self.skirt_height} layer(s) tall")
         
         # Find first revolution to determine the spiral perimeter
-        first_rev_points = [p for p in spiral_points if p.revolution < 1.0]
-        
-        if not first_rev_points:
-            logger.warning("No first revolution points found for skirt, skipping")
-            return
-        
-        # Calculate centroid of first revolution (spiral center)
-        cx = sum(p.position.x for p in first_rev_points) / len(first_rev_points) + offset.x
-        cy = sum(p.position.y for p in first_rev_points) / len(first_rev_points) + offset.y
-        
-        # Find average radius of spiral perimeter
-        spiral_radius = sum(
-            math.sqrt((p.position.x + offset.x - cx)**2 + (p.position.y + offset.y - cy)**2)
-            for p in first_rev_points
-        ) / len(first_rev_points)
+        from .spiral_generator import RustSpiralPoints as _RSP
+        if isinstance(spiral_points, _RSP):
+            revs = spiral_points._revs
+            cut = next((i for i, r in enumerate(revs) if r >= 1.0), len(revs))
+            if cut == 0:
+                logger.warning("No first revolution points found for skirt, skipping")
+                return
+            frxs = spiral_points._xs[:cut]
+            frys = spiral_points._ys[:cut]
+            cx = sum(frxs) / cut + offset.x
+            cy = sum(frys) / cut + offset.y
+            spiral_radius = sum(
+                math.sqrt((frxs[i] + offset.x - cx)**2 + (frys[i] + offset.y - cy)**2)
+                for i in range(cut)
+            ) / cut
+        else:
+            first_rev_points = [p for p in spiral_points if p.revolution < 1.0]
+            if not first_rev_points:
+                logger.warning("No first revolution points found for skirt, skipping")
+                return
+            cx = sum(p.position.x for p in first_rev_points) / len(first_rev_points) + offset.x
+            cy = sum(p.position.y for p in first_rev_points) / len(first_rev_points) + offset.y
+            spiral_radius = sum(
+                math.sqrt((p.position.x + offset.x - cx)**2 + (p.position.y + offset.y - cy)**2)
+                for p in first_rev_points
+            ) / len(first_rev_points)
         
         # Skirt radius = spiral radius + nozzle_width/2 + skirt_distance
         # nozzle_width = nozzle_diameter (assumes line width = nozzle diameter for 0.5mm layer)

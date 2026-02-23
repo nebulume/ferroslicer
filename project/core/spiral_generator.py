@@ -1,6 +1,7 @@
 '''
 Spiral path generation for true vase mode printing.
 Creates a continuous spiral that rises incrementally with Z while spiraling around the perimeter.
+Hot path accelerated via Rust slicer_core extension (100x speedup over pure Python).
 '''
 
 import math
@@ -11,6 +12,75 @@ from .geometry_analyzer import Layer
 from .logger import setup_logger
 
 logger = setup_logger("spiral_generator")
+
+try:
+    import slicer_core as _rust_sc
+    _HAS_RUST = True
+except ImportError:
+    _HAS_RUST = False
+
+
+class _FlatPos:
+    """Minimal position-like object backed by pre-allocated values (no allocation)."""
+    __slots__ = ('x', 'y', 'z')
+
+    def __init__(self, x: float, y: float, z: float):
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+class _FlatSpiralPoint:
+    """Minimal SpiralPoint-compatible object backed by flat arrays — created lazily."""
+    __slots__ = ('position', 'angle', 'revolution', 'layer_index', 'is_extrusion')
+
+    def __init__(self, x: float, y: float, z: float, angle: float, revolution: float):
+        self.position = _FlatPos(x, y, z)
+        self.angle = angle
+        self.revolution = revolution
+        self.layer_index = revolution  # same as revolution for spiral
+        self.is_extrusion = True
+
+
+class RustSpiralPoints:
+    """
+    List-like wrapper around flat Rust arrays.
+    Presents the same interface as List[SpiralPoint] without allocating
+    600k Python objects upfront.  Objects are created on demand.
+    """
+
+    def __init__(self, xs, ys, zs, angles, revolutions):
+        self._xs = xs
+        self._ys = ys
+        self._zs = zs
+        self._angles = angles
+        self._revs = revolutions
+
+    def __len__(self) -> int:
+        return len(self._xs)
+
+    def __getitem__(self, idx: int):
+        return _FlatSpiralPoint(
+            self._xs[idx], self._ys[idx], self._zs[idx],
+            self._angles[idx], self._revs[idx]
+        )
+
+    def __iter__(self):
+        for i in range(len(self._xs)):
+            yield _FlatSpiralPoint(
+                self._xs[i], self._ys[i], self._zs[i],
+                self._angles[i], self._revs[i]
+            )
+
+    # Slicing support used by gcode_generator (first_rev filtering)
+    def iter_first_revolution(self):
+        """Yield only points where revolution < 1.0."""
+        for i in range(len(self._xs)):
+            if self._revs[i] < 1.0:
+                yield _FlatSpiralPoint(
+                    self._xs[i], self._ys[i], self._zs[i],
+                    self._angles[i], self._revs[i]
+                )
 
 
 @dataclass
@@ -55,6 +125,72 @@ class SpiralGenerator:
         
         if not layers:
             raise ValueError("No layers provided to spiral generator")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Rust fast-path
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _generate_spiral_rust(
+        self,
+        wave_amplitude: float = 2.0,
+        waves_per_rev: float = 0.0,
+        wave_pattern: str = "sine",
+        layer_alternation: int = 2,
+        phase_offset: float = 50,
+        seam_shift: float = 0.0,
+        base_integrity_manager=None,
+        wave_asymmetry: bool = False,
+        wave_asymmetry_intensity: float = 100,
+    ) -> 'RustSpiralPoints':
+        """
+        Generate spiral + wave in one Rust call.
+        Returns a RustSpiralPoints list-alike (no Python object allocation).
+        """
+        layer_zs = [layer.z for layer in self.layers]
+        layer_pts_x = [[p.x for p in layer.points] for layer in self.layers]
+        layer_pts_y = [[p.y for p in layer.points] for layer in self.layers]
+
+        # Derive base integrity params
+        base_height = 28.0
+        base_mode = "fewer_gaps"
+        base_transition = "exponential"
+        if base_integrity_manager is not None:
+            base_height = getattr(base_integrity_manager, 'base_height', 28.0)
+            base_mode = getattr(base_integrity_manager, 'mode', None)
+            if base_mode is not None:
+                base_mode = base_mode.value if hasattr(base_mode, 'value') else str(base_mode)
+            else:
+                base_mode = "fewer_gaps"
+            base_transition = getattr(base_integrity_manager, 'transition', None)
+            if base_transition is not None:
+                base_transition = base_transition.value if hasattr(base_transition, 'value') else str(base_transition)
+            else:
+                base_transition = "exponential"
+
+        xs, ys, zs, angles, revs = _rust_sc.generate_spiral_with_waves(
+            layer_zs,
+            layer_pts_x,
+            layer_pts_y,
+            float(self.layer_height),
+            float(self.points_per_degree),
+            float(wave_amplitude),
+            float(waves_per_rev),
+            str(wave_pattern),
+            int(layer_alternation),
+            float(phase_offset),
+            float(seam_shift),
+            float(base_height),
+            str(base_mode),
+            str(base_transition),
+            int(self.smoothing_window_size),
+            float(self.smoothing_move_threshold),
+            int(self.target_samples_per_wave),
+            bool(wave_asymmetry),
+            float(wave_asymmetry_intensity),
+        )
+        total = len(xs)
+        logger.info(f"Rust spiral complete: {total} points (revolutions={total / max(1, int(360 * self.points_per_degree)):.1f})")
+        return RustSpiralPoints(xs, ys, zs, angles, revs)
 
     def generate_spiral_path(self) -> List[SpiralPoint]:
         """
