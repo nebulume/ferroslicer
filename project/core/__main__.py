@@ -341,6 +341,17 @@ Examples:
         fan_speed = self._prompt_float("Fan speed (%)", self.config.get("print_settings.fan_speed", 100), 0, 100)
         max_volumetric_speed = self._prompt_float("Max volumetric speed (mm³/s)", self.config.get("print_settings.max_volumetric_speed", 12.0), 0.1)
 
+        # Skirt settings
+        print("\n[Skirt Settings]")
+        skirt_enabled = self._prompt_choice("Enable skirt", ["yes", "no"], "yes" if self.config.get("print_settings.skirt_enabled", True) else "no") == "yes"
+        
+        if skirt_enabled:
+            skirt_distance = self._prompt_float("Skirt distance from print (mm)", self.config.get("print_settings.skirt_distance", 0.0))
+            skirt_height = self._prompt_int("Skirt height (layers)", self.config.get("print_settings.skirt_height", 1), 1, 10)
+        else:
+            skirt_distance = None
+            skirt_height = None
+
         # Vase mode selection
         print("\n[Printing Mode]")
         default_vase_mode = "spiral_vase" if self.config.get("print_settings.vase_mode", False) else "layer_mesh"
@@ -421,6 +432,13 @@ Examples:
             "base_mode": base_mode,
             "base_transition": base_transition
         }
+
+        if skirt_enabled:
+            result["skirt"] = True
+            result["skirt_distance"] = skirt_distance
+            result["skirt_height"] = skirt_height
+        else:
+            result["no_skirt"] = True
 
         if wave_spacing is not None:
             result["wave_spacing"] = wave_spacing

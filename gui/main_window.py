@@ -2,14 +2,14 @@
 MeshyGen main window.
 
 Layout (horizontal splitter):
-  LEFT  : Settings panel (scrollable)
+  LEFT  : Settings panel (always visible, scrollable)
   RIGHT : Vertical splitter
-           TOP    : STL 3D viewer
-           BOTTOM : Vertical splitter
-                     TOP    : Path preview (2D iso / 3D snap / 3D full)
-                     BOTTOM : Log / progress panel
+           TOP    : QTabWidget
+                     Tab 0 "Model"     — STL 3D viewer
+                     Tab 1 "Generated" — toolpath 3D viewer
+           BOTTOM : Log / progress panel
 
-Bottom toolbar: Load STL | Preview | Generate | Send to Printer | App Settings
+Bottom toolbar: Load STL | App Settings | Generate GCode | Send to Printer
 Status bar: file path | Klipper status
 """
 
@@ -21,22 +21,20 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QProgressBar, QFileDialog, QStatusBar,
-    QToolBar, QMessageBox, QComboBox, QTabWidget, QFrame,
-    QApplication, QTextEdit,
+    QMessageBox, QTabWidget, QFrame, QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QObject
-from PyQt6.QtGui import QAction, QIcon, QFont, QKeySequence, QColor, QTextCursor
+from PyQt6.QtGui import QAction, QFont, QKeySequence, QColor, QTextCursor
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from gui.widgets.stl_viewer    import STLViewer
-from gui.widgets.path_preview  import PathPreviewWidget
-from gui.widgets.settings_panel import SettingsPanel
-from gui.workers.slicer_worker  import SlicerWorker
-from gui.workers.preview_worker import PreviewWorker
-from gui.dialogs.app_settings   import AppSettingsDialog, load_app_settings
-from gui.dialogs.print_history  import PrintHistoryDialog
+from gui.widgets.stl_viewer      import STLViewer
+from gui.widgets.toolpath_viewer import ToolpathViewer
+from gui.widgets.settings_panel  import SettingsPanel
+from gui.workers.slicer_worker   import SlicerWorker
+from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings
+from gui.dialogs.print_history   import PrintHistoryDialog
 import db.print_db as pdb
 
 
@@ -73,7 +71,6 @@ class MainWindow(QMainWindow):
         self._gcode_path: str = ""
         self._app_settings: dict = load_app_settings()
         self._slicer_worker: SlicerWorker = None
-        self._preview_worker: PreviewWorker = None
         self._klipper_timer = QTimer(self)
         self._klipper_timer.setInterval(5000)
         self._klipper_timer.timeout.connect(self._poll_klipper)
@@ -98,59 +95,53 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── Main splitter ────────────────────────────────────────────────────
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter, stretch=1)
+        # ── Main splitter (settings | viewer) ────────────────────────────────
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(main_splitter, stretch=1)
 
-        # LEFT: settings panel
+        # LEFT: settings panel (always visible)
         self.settings_panel = SettingsPanel()
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
-        splitter.addWidget(self.settings_panel)
+        main_splitter.addWidget(self.settings_panel)
 
-        # RIGHT: vertical splitter (STL viewer top, preview + log bottom)
+        # RIGHT: vertical splitter (tabs top, log bottom)
         right_splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(right_splitter)
-        splitter.setSizes([290, 990])
+        main_splitter.addWidget(right_splitter)
+        main_splitter.setSizes([290, 990])
 
-        # STL viewer
+        # ── Preview tab widget ────────────────────────────────────────────────
+        self.preview_tabs = QTabWidget()
+        self.preview_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self.preview_tabs.setStyleSheet("""
+            QTabWidget::pane { border: none; }
+            QTabBar::tab {
+                padding: 7px 20px;
+                background: #1a1d26;
+                color: #888;
+                font-size: 12px;
+            }
+            QTabBar::tab:selected {
+                background: #22273a;
+                color: #dde;
+                border-bottom: 2px solid #2a5298;
+            }
+            QTabBar::tab:hover:!selected { background: #1f2230; }
+        """)
+        right_splitter.addWidget(self.preview_tabs)
+
+        # Tab 0: Model — STL viewer
         self.stl_viewer = STLViewer()
         self.stl_viewer.file_dropped.connect(self._load_stl)
-        right_splitter.addWidget(self.stl_viewer)
+        self.preview_tabs.addTab(self.stl_viewer, "  Model  ")
 
-        # ── Bottom of right panel: preview + log ─────────────────────────────
-        bottom_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.addWidget(bottom_splitter)
-        right_splitter.setSizes([480, 320])
+        # Tab 1: Generated — toolpath viewer
+        self.toolpath_viewer = ToolpathViewer()
+        self.preview_tabs.addTab(self.toolpath_viewer, "  Generated  ")
 
-        # Path preview panel
-        preview_container = QWidget()
-        pc_layout = QVBoxLayout(preview_container)
-        pc_layout.setContentsMargins(0, 2, 0, 0)
-        pc_layout.setSpacing(4)
-
-        mode_row = QHBoxLayout()
-        mode_row.setContentsMargins(6, 0, 6, 0)
-        mode_lbl = QLabel("Preview:")
-        mode_lbl.setStyleSheet("color: #aaa;")
-        self.preview_mode_combo = QComboBox()
-        self.preview_mode_combo.addItems(["2D Isometric", "3D Snapshot", "3D Full"])
-        self.preview_mode_combo.currentIndexChanged.connect(self._on_preview_mode_change)
-        refresh_btn = QPushButton("↺  Refresh")
-        refresh_btn.setFixedHeight(24)
-        refresh_btn.clicked.connect(self._refresh_preview)
-        mode_row.addWidget(mode_lbl)
-        mode_row.addWidget(self.preview_mode_combo, stretch=1)
-        mode_row.addWidget(refresh_btn)
-        pc_layout.addLayout(mode_row)
-
-        self.path_preview = PathPreviewWidget()
-        pc_layout.addWidget(self.path_preview, stretch=1)
-        bottom_splitter.addWidget(preview_container)
-
-        # Log panel
+        # ── Log panel ─────────────────────────────────────────────────────────
         log_container = QWidget()
         log_layout = QVBoxLayout(log_container)
-        log_layout.setContentsMargins(6, 2, 6, 4)
+        log_layout.setContentsMargins(6, 4, 6, 4)
         log_layout.setSpacing(2)
 
         log_header = QHBoxLayout()
@@ -168,16 +159,16 @@ class MainWindow(QMainWindow):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setFixedHeight(120)
         self.log_text.setStyleSheet(
             "QTextEdit { background: #0e0f14; color: #8da; border: 1px solid #2a2d3a; "
             "border-radius: 3px; font-family: Menlo, Monaco, monospace; font-size: 11px; }"
         )
         log_layout.addWidget(self.log_text)
-        bottom_splitter.addWidget(log_container)
-        bottom_splitter.setSizes([220, 140])
 
-        # ── Bottom toolbar ───────────────────────────────────────────────────
+        right_splitter.addWidget(log_container)
+        right_splitter.setSizes([660, 140])
+
+        # ── Bottom toolbar ────────────────────────────────────────────────────
         toolbar_frame = QFrame()
         toolbar_frame.setFixedHeight(52)
         toolbar_frame.setStyleSheet("background: #1e2028; border-top: 1px solid #333;")
@@ -189,14 +180,11 @@ class MainWindow(QMainWindow):
         self.load_btn.setFixedHeight(36)
         self.load_btn.clicked.connect(self._pick_stl)
 
-        self.preview_btn = QPushButton("⚡ Preview")
-        self.preview_btn.setFixedHeight(36)
-        self.preview_btn.setEnabled(False)
-        self.preview_btn.clicked.connect(self._refresh_preview)
-
         self.settings_btn = QPushButton("⚙ App Settings")
         self.settings_btn.setFixedHeight(36)
-        self.settings_btn.setToolTip("Edit printer settings, start/end GCode templates, output directory")
+        self.settings_btn.setToolTip(
+            "Edit printer settings, start/end GCode templates, output directory"
+        )
         self.settings_btn.clicked.connect(self._open_settings)
 
         self.generate_btn = QPushButton("▶  Generate GCode")
@@ -219,33 +207,32 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled { background: #333; color: #666; }"
         )
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(6)
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setStyleSheet(
-            "QProgressBar::chunk { background: #2a5298; border-radius: 3px; }"
-            "QProgressBar { border-radius: 3px; background: #333; }"
-        )
-
         self.progress_label = QLabel("")
         self.progress_label.setStyleSheet("color: #aaa; font-size: 11px;")
         self.progress_label.setMinimumWidth(200)
 
         tb_layout.addWidget(self.load_btn)
-        tb_layout.addWidget(self.preview_btn)
         tb_layout.addWidget(self.settings_btn)
         tb_layout.addStretch()
         tb_layout.addWidget(self.progress_label)
         tb_layout.addWidget(self.generate_btn)
         tb_layout.addWidget(self.send_btn)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(5)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar::chunk { background: #2a5298; border-radius: 2px; }"
+            "QProgressBar { border-radius: 2px; background: #333; }"
+        )
+
         main_layout.addWidget(toolbar_frame)
         main_layout.addWidget(self.progress_bar)
 
-        # ── Status bar ───────────────────────────────────────────────────────
+        # ── Status bar ────────────────────────────────────────────────────────
         self.status_bar = self.statusBar()
         self.status_file_lbl = QLabel("No file loaded")
         self.status_klipper_lbl = QLabel("Klipper: checking…")
@@ -256,7 +243,6 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         menubar = self.menuBar()
 
-        # File
         file_menu = menubar.addMenu("&File")
         open_act = QAction("Open STL…", self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
@@ -267,20 +253,18 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(reveal_act)
 
-        # Settings
         settings_menu = menubar.addMenu("&Settings")
         prefs_act = QAction("App Settings…", self)
         prefs_act.setShortcut(QKeySequence("Ctrl+,"))
         prefs_act.triggered.connect(self._open_settings)
         settings_menu.addAction(prefs_act)
 
-        # History
         history_menu = menubar.addMenu("&History")
         hist_act = QAction("Print History…", self)
         hist_act.triggered.connect(self._open_history)
         history_menu.addAction(hist_act)
 
-    # ── File loading ─────────────────────────────────────────────────────────
+    # ── File loading ──────────────────────────────────────────────────────────
 
     def _pick_stl(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -292,13 +276,14 @@ class MainWindow(QMainWindow):
     def _load_stl(self, path: str):
         self._stl_path = path
         self._gcode_path = ""
-        self.path_preview.clear()
+        self.toolpath_viewer.clear()
         self.stl_viewer.load_stl(path)
+        self.preview_tabs.setCurrentIndex(0)   # switch to Model tab
         self.status_file_lbl.setText(Path(path).name)
         self._update_controls()
         self._append_log("INFO", f"Loaded {Path(path).name}")
 
-    # ── Log panel ────────────────────────────────────────────────────────────
+    # ── Log panel ─────────────────────────────────────────────────────────────
 
     @pyqtSlot(str, str)
     def _append_log(self, level: str, msg: str):
@@ -311,7 +296,6 @@ class MainWindow(QMainWindow):
         }
         color = colors.get(level, "#8da")
         self.log_text.append(f'<span style="color:{color};">{msg}</span>')
-        # Auto-scroll to bottom
         cursor = self.log_text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.log_text.setTextCursor(cursor)
@@ -319,72 +303,7 @@ class MainWindow(QMainWindow):
     def _clear_log(self):
         self.log_text.clear()
 
-    # ── Preview ──────────────────────────────────────────────────────────────
-
-    def _on_preview_mode_change(self, idx):
-        modes = ["2d", "3d_snap", "3d_full"]
-        self.path_preview.set_mode(modes[idx])
-
-    def _refresh_preview(self, snap_res=0.15):
-        if not self._stl_path:
-            return
-        if self._preview_worker and self._preview_worker.isRunning():
-            return
-
-        modes = ["2d", "3d_snap", "3d_full"]
-        mode = modes[self.preview_mode_combo.currentIndex()]
-        overrides = self.settings_panel.get_config_overrides()
-
-        # Higher quality snap preview: use more samples to make waves visible
-        # snap_res 0.15 means 15% of full ppd, but Rust anti-alias guard will
-        # bump it to meet target_samples_per_wave (set to 8 for faster preview)
-        if mode == "3d_snap":
-            snap_res = 0.15
-        elif mode == "3d_full":
-            snap_res = 1.0
-        else:
-            snap_res = 0.3
-
-        self.preview_btn.setEnabled(False)
-        self._set_progress(0, "Generating preview…")
-        self.progress_bar.setVisible(True)
-        self._append_log("INFO", f"Starting {mode} preview…")
-
-        self._preview_worker = PreviewWorker(
-            self._stl_path, overrides, mode=mode,
-            snap_resolution=snap_res,
-            target_samples_per_wave=8,  # 8 samples/wave is enough to see pattern
-            parent=self,
-        )
-        self._preview_worker.layer_data_ready.connect(self._on_layer_preview)
-        self._preview_worker.path_data_ready.connect(self._on_path_preview)
-        self._preview_worker.error.connect(self._on_preview_error)
-        self._preview_worker.finished.connect(self._on_preview_finished)
-        self._preview_worker.start()
-
-    @pyqtSlot(list)
-    def _on_layer_preview(self, layers):
-        self.path_preview.set_layer_data(layers, label=f"{len(layers)} layers")
-
-    @pyqtSlot(object)
-    def _on_path_preview(self, pts):
-        self.path_preview.set_path_data(pts, label=f"{len(pts):,} path points")
-
-    @pyqtSlot()
-    def _on_preview_finished(self):
-        self.preview_btn.setEnabled(bool(self._stl_path))
-        self.progress_bar.setVisible(False)
-        self._set_progress(0, "")
-        self._append_log("INFO", "Preview ready.")
-
-    @pyqtSlot(str)
-    def _on_preview_error(self, msg):
-        self.preview_btn.setEnabled(bool(self._stl_path))
-        self.progress_bar.setVisible(False)
-        self._set_progress(0, "")
-        self._append_log("ERROR", f"Preview error: {msg[:200]}")
-
-    # ── GCode generation ─────────────────────────────────────────────────────
+    # ── GCode generation ──────────────────────────────────────────────────────
 
     def _generate_gcode(self):
         if not self._stl_path:
@@ -400,11 +319,11 @@ class MainWindow(QMainWindow):
             "end_gcode":   settings.get("end_gcode",   ""),
         }
 
-        stl_stem  = Path(self._stl_path).stem[:20]
-        ms        = overrides.get("mesh_settings", {})
-        amp       = ms.get("wave_amplitude", 2.0)
-        ps        = overrides.get("print_settings", {})
-        mode_tag  = "vase" if ps.get("vase_mode") else "mesh"
+        stl_stem = Path(self._stl_path).stem[:20]
+        ms       = overrides.get("mesh_settings", {})
+        amp      = ms.get("wave_amplitude", 2.0)
+        ps       = overrides.get("print_settings", {})
+        mode_tag = "vase" if ps.get("vase_mode") else "mesh"
         from datetime import datetime
         ts = datetime.now().strftime("%d%m%y_%H%M")
         fname = f"{stl_stem}_{amp:.0f}a_{mode_tag}_{ts}.gcode"
@@ -453,13 +372,8 @@ class MainWindow(QMainWindow):
         ip = self._app_settings.get("printer_ip", "")
         pdb.add_job(self._stl_path, gcode_path, overrides, printer_ip=ip)
 
-        # Auto-refresh preview with the generated toolpath
-        QTimer.singleShot(300, self._refresh_preview)
-
-        QMessageBox.information(
-            self, "Done",
-            f"GCode saved:\n{Path(gcode_path).name}\n\nPreview updated. Click 'Send to Printer' to upload."
-        )
+        # Auto-generate toolpath preview and switch to Generated tab
+        QTimer.singleShot(300, self._start_toolpath_preview)
 
     @pyqtSlot(str)
     def _on_slicer_error(self, msg):
@@ -469,7 +383,17 @@ class MainWindow(QMainWindow):
         self._append_log("ERROR", f"Slicer error: {msg[:500]}")
         QMessageBox.critical(self, "Slicer Error", msg[:1000])
 
-    # ── Klipper integration ──────────────────────────────────────────────────
+    # ── Toolpath preview ─────────────────────────────────────────────────────
+
+    def _start_toolpath_preview(self):
+        """Parse the generated GCode file and display the actual toolpath."""
+        if not self._gcode_path:
+            return
+        self._append_log("INFO", "Loading toolpath from GCode…")
+        self.preview_tabs.setCurrentIndex(1)          # switch to Generated tab
+        self.toolpath_viewer.load_gcode(self._gcode_path)
+
+    # ── Klipper integration ───────────────────────────────────────────────────
 
     def _send_to_printer(self):
         if not self._gcode_path:
@@ -526,18 +450,18 @@ class MainWindow(QMainWindow):
         if state == "unknown":
             self.status_klipper_lbl.setText(f"Klipper: {ip} offline")
             self.status_klipper_lbl.setStyleSheet("color: #e74c3c;")
-        elif state in ("printing",):
+        elif state == "printing":
             pct = int(client.get_progress() * 100)
             self.status_klipper_lbl.setText(f"Klipper: printing {pct}%")
             self.status_klipper_lbl.setStyleSheet("color: #27ae60;")
         elif state == "complete":
-            self.status_klipper_lbl.setText(f"Klipper: complete")
+            self.status_klipper_lbl.setText("Klipper: complete")
             self.status_klipper_lbl.setStyleSheet("color: #2ecc71;")
         else:
             self.status_klipper_lbl.setText(f"Klipper: {ip} — {state or 'idle'}")
             self.status_klipper_lbl.setStyleSheet("color: #aaa;")
 
-    # ── Dialogs ──────────────────────────────────────────────────────────────
+    # ── Dialogs ───────────────────────────────────────────────────────────────
 
     def _open_settings(self):
         dlg = AppSettingsDialog(self)
@@ -552,14 +476,13 @@ class MainWindow(QMainWindow):
         if self._gcode_path and Path(self._gcode_path).exists():
             subprocess.Popen(["open", "-R", self._gcode_path])
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _on_settings_changed(self):
-        pass  # Could auto-preview here if desired
+        pass  # Could auto-preview here in the future
 
     def _update_controls(self):
         has_file = bool(self._stl_path)
-        self.preview_btn.setEnabled(has_file)
         self.generate_btn.setEnabled(has_file)
         self.send_btn.setEnabled(bool(self._gcode_path))
 

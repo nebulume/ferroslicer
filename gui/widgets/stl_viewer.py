@@ -121,12 +121,21 @@ class STLViewer(QWidget):
         scale = np.abs(flat - center).max()
         if scale > 0:
             verts = (verts - center) / scale
-        # Flip Y so Z is up (STL is typically Z-up)
-        # Swap Y and Z so Z-up maps to Y-up in screen space
+        # Swap Y and Z so Z-up STL maps to Y-up screen space, then flip Y
         verts = verts[:, :, [0, 2, 1]]
-        verts[:, :, 1] *= -1  # flip new Y so model is right-way up
+        verts[:, :, 1] *= -1
+
+        # Compute face normals from vertices — STL stored normals are often
+        # zero or in a different coordinate system, which causes half the faces
+        # to be incorrectly culled.  Cross product of edges is always correct.
+        v0, v1, v2 = verts[:, 0], verts[:, 1], verts[:, 2]
+        face_normals = np.cross(v1 - v0, v2 - v0)          # (N, 3)
+        norms = np.linalg.norm(face_normals, axis=1, keepdims=True)
+        norms = np.where(norms > 1e-12, norms, 1.0)
+        face_normals = face_normals / norms
+
         self._verts   = verts
-        self._normals = normals.copy()
+        self._normals = face_normals
         self.reset_view()
 
     @pyqtSlot(str)
@@ -218,9 +227,10 @@ class STLViewer(QWidget):
         rot_verts = verts @ R.T                           # (N, 3, 3) rotated
         rot_normals = normals @ R.T                       # (N, 3) rotated
 
-        # Back-face culling — drop triangles whose normal faces away from camera
-        # In view space, camera is along -Z, so normal.z < 0 means back-facing
-        front = rot_normals[:, 2] > -0.1                 # slight bias to keep edges
+        # Back-face culling — drop triangles whose face normal points away from camera
+        # Camera is at +Z in view space; normals with z <= 0 are back-facing.
+        # Small positive bias retains edge-on faces so the silhouette is complete.
+        front = rot_normals[:, 2] > 0.05
         rot_verts   = rot_verts[front]
         rot_normals = rot_normals[front]
         if len(rot_verts) == 0:
@@ -236,7 +246,7 @@ class STLViewer(QWidget):
         scale = min(w, h) / 2.0 * self.zoom
         cx, cy = w / 2 + self.pan_x, h / 2 + self.pan_y
         proj_x = rot_verts[:, :, 0] * scale + cx        # (M, 3)
-        proj_y = rot_verts[:, :, 1] * -scale + cy       # (M, 3)  flip Y
+        proj_y = rot_verts[:, :, 1] * scale + cy        # (M, 3)
 
         # Lighting: diffuse from fixed light direction
         light_r = self._light @ R.T                      # light in view space
@@ -273,7 +283,7 @@ class STLViewer(QWidget):
 
         if self._mouse_button == Qt.MouseButton.LeftButton:
             self.rot_y += dx * 0.5
-            self.rot_x += dy * 0.5
+            self.rot_x -= dy * 0.5
             self.update()
         elif self._mouse_button == Qt.MouseButton.RightButton:
             self.pan_x += dx
