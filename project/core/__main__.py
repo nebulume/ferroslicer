@@ -263,6 +263,20 @@ Examples:
         )
 
         parser.add_argument(
+            "--seam-position",
+            type=str,
+            choices=["auto", "front", "back", "left", "right",
+                     "front_right", "front_left", "back_right", "back_left", "sharpest"],
+            help="Place seam at a specific corner/direction of the model"
+        )
+
+        parser.add_argument(
+            "--seam-transition-waves",
+            type=float,
+            help="Smooth the seam phase transition over N waves (0 = sharp, e.g. 2.0)"
+        )
+
+        parser.add_argument(
             "--base-height",
             type=float,
             help="Base integrity height (mm)"
@@ -555,6 +569,12 @@ Examples:
         if hasattr(args, 'seam_shift') and args.seam_shift is not None:
             config_overrides.setdefault('mesh_settings', {})['seam_shift'] = args.seam_shift
 
+        if hasattr(args, 'seam_position') and args.seam_position:
+            config_overrides.setdefault('mesh_settings', {})['seam_position'] = args.seam_position
+
+        if hasattr(args, 'seam_transition_waves') and args.seam_transition_waves is not None:
+            config_overrides.setdefault('mesh_settings', {})['seam_transition_waves'] = args.seam_transition_waves
+
         if hasattr(args, 'base_height') and args.base_height:
             config_overrides.setdefault('mesh_settings', {})['base_height'] = args.base_height
 
@@ -672,6 +692,12 @@ Examples:
                 cmd += f" --layer-alternation {overrides['mesh_settings']['layer_alternation']}"
             if 'phase_offset' in overrides['mesh_settings']:
                 cmd += f" --phase-offset {overrides['mesh_settings']['phase_offset']}"
+            if 'seam_shift' in overrides['mesh_settings']:
+                cmd += f" --seam-shift {overrides['mesh_settings']['seam_shift']}"
+            if 'seam_position' in overrides['mesh_settings']:
+                cmd += f" --seam-position {overrides['mesh_settings']['seam_position']}"
+            if 'seam_transition_waves' in overrides['mesh_settings']:
+                cmd += f" --seam-transition-waves {overrides['mesh_settings']['seam_transition_waves']}"
             if 'base_height' in overrides['mesh_settings']:
                 cmd += f" --base-height {overrides['mesh_settings']['base_height']}"
             if 'base_mode' in overrides['mesh_settings']:

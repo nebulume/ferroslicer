@@ -3,6 +3,7 @@ Main MeshVase Slicer orchestrator - coordinates all components.
 '''
 
 import os
+import math
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -19,6 +20,110 @@ from .preview import PreviewSystem
 from .exceptions import ProjectError
 
 logger = setup_logger("slicer")
+
+# ── Seam position helpers ─────────────────────────────────────────────────────
+
+_SEAM_DIRECTIONS = {
+    "right":       ( 1.0,  0.0),
+    "left":        (-1.0,  0.0),
+    "front":       ( 0.0,  1.0),
+    "back":        ( 0.0, -1.0),
+    "front_right": ( 1.0,  1.0),
+    "front_left":  (-1.0,  1.0),
+    "back_right":  ( 1.0, -1.0),
+    "back_left":   (-1.0, -1.0),
+}
+
+def _seam_target_angle(layers, seam_position: str) -> float | None:
+    """Return the target angle (radians, relative to layer centroid) for seam placement.
+    Returns None for 'auto' or if detection fails."""
+    if seam_position == "auto" or not layers:
+        return None
+
+    n = len(layers)
+    mid = layers[n // 4 : 3 * n // 4] or layers
+
+    if seam_position in _SEAM_DIRECTIONS:
+        dx, dy = _SEAM_DIRECTIONS[seam_position]
+        d_len = math.sqrt(dx * dx + dy * dy)
+        dx, dy = dx / d_len, dy / d_len
+        best_dot, best_angle = -float("inf"), 0.0
+        for layer in mid:
+            pts = layer.points
+            if not pts:
+                continue
+            cx = sum(p.x for p in pts) / len(pts)
+            cy = sum(p.y for p in pts) / len(pts)
+            for p in pts:
+                rx, ry = p.x - cx, p.y - cy
+                dot = rx * dx + ry * dy
+                if dot > best_dot:
+                    best_dot = dot
+                    best_angle = math.atan2(ry, rx)
+        return best_angle
+
+    if seam_position == "sharpest":
+        sin_sum = cos_sum = 0.0
+        count = 0
+        for layer in mid:
+            pts = layer.points
+            n_pts = len(pts)
+            if n_pts < 3:
+                continue
+            cx = sum(p.x for p in pts) / n_pts
+            cy = sum(p.y for p in pts) / n_pts
+            best_cos, best_ang = -2.0, 0.0
+            for i in range(n_pts):
+                p0, p1, p2 = pts[(i - 1) % n_pts], pts[i], pts[(i + 1) % n_pts]
+                v1 = (p0.x - p1.x, p0.y - p1.y)
+                v2 = (p2.x - p1.x, p2.y - p1.y)
+                l1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2)
+                l2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2)
+                if l1 < 1e-6 or l2 < 1e-6:
+                    continue
+                cos_a = (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2)
+                cos_a = max(-1.0, min(1.0, cos_a))
+                if cos_a > best_cos:
+                    best_cos = cos_a
+                    best_ang = math.atan2(p1.y - cy, p1.x - cx)
+            if best_cos > -2.0:
+                sin_sum += math.sin(best_ang)
+                cos_sum += math.cos(best_ang)
+                count += 1
+        if count == 0:
+            return None
+        return math.atan2(sin_sum / count, cos_sum / count)
+
+    return None
+
+
+def _compute_seam_revolution_offset(layers, seam_position: str,
+                                     cycle_len_revs: float) -> float:
+    """Compute the revolution offset that aligns the first seam with the
+    desired angular position on the model.  Returns 0.0 for 'auto'."""
+    theta_target = _seam_target_angle(layers, seam_position)
+    if theta_target is None:
+        return 0.0
+
+    # Angle of the spiral's first point (angle=0 in spiral coords) in world space
+    first_pts = layers[0].points if layers else []
+    if not first_pts:
+        return 0.0
+    cx = sum(p.x for p in first_pts) / len(first_pts)
+    cy = sum(p.y for p in first_pts) / len(first_pts)
+    p0 = first_pts[0]
+    theta_start = math.atan2(p0.y - cy, p0.x - cx)
+
+    # Natural seam at revolution cycle_len_revs → position angle
+    # ≈ theta_start + frac(cycle_len_revs) * 2π
+    # We want it at theta_target → shift by the difference.
+    frac = cycle_len_revs % 1.0
+    rev_offset = (theta_target - theta_start) / (2.0 * math.pi) - frac
+    # Normalise to [-0.5, 0.5] so the shift is minimal
+    rev_offset = rev_offset % 1.0
+    if rev_offset > 0.5:
+        rev_offset -= 1.0
+    return rev_offset
 
 
 class MeshVaseSlicer:
@@ -184,6 +289,8 @@ class MeshVaseSlicer:
             wave_asymmetry = merged_config["mesh_settings"].get("wave_asymmetry", False)
             wave_asymmetry_intensity = merged_config["mesh_settings"].get("wave_asymmetry_intensity", 100)
             seam_shift = merged_config["mesh_settings"].get("seam_shift", 0.0)
+            seam_position = merged_config["mesh_settings"].get("seam_position", "auto")
+            seam_transition_waves = float(merged_config["mesh_settings"].get("seam_transition_waves", 0))
 
             # Compute waves_per_rev (same logic as apply_wave_to_spiral)
             if wave_count:
@@ -193,6 +300,14 @@ class MeshVaseSlicer:
                 waves_per_rev = avg_perimeter / wave_spacing if avg_perimeter > 0 else 0.0
             else:
                 waves_per_rev = 0.0
+
+            # Compute seam revolution offset for seam_position
+            cycle_len_revs = float(layer_alt)
+            if seam_shift != 0.0 and waves_per_rev > 0:
+                cycle_len_revs += seam_shift / waves_per_rev
+            seam_revolution_offset = _compute_seam_revolution_offset(
+                analyzer.layers, seam_position, cycle_len_revs
+            )
 
             spiral_gen = SpiralGenerator(
                 analyzer.layers,
@@ -215,6 +330,8 @@ class MeshVaseSlicer:
                     layer_alternation=layer_alt,
                     phase_offset=phase_offset,
                     seam_shift=seam_shift,
+                    seam_revolution_offset=seam_revolution_offset,
+                    seam_transition_waves=seam_transition_waves,
                     base_integrity_manager=base_mgr,
                     wave_asymmetry=wave_asymmetry,
                     wave_asymmetry_intensity=wave_asymmetry_intensity,
@@ -234,6 +351,8 @@ class MeshVaseSlicer:
                     wave_asymmetry_intensity=wave_asymmetry_intensity,
                     base_integrity_manager=base_mgr,
                     seam_shift=seam_shift,
+                    seam_revolution_offset=seam_revolution_offset,
+                    seam_transition_waves=seam_transition_waves,
                 )
 
             gcode_content = gcode_gen.generate_gcode(

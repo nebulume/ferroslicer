@@ -208,12 +208,54 @@ class GCodeLoaderThread(QThread):
 
             # ── Seam / revolution detection ───────────────────────────────────
             # Track the position angle of each point relative to the XY centroid.
-            # The position angle completes exactly 360° per physical revolution
-            # for any shape, so every 2π crossing = one full revolution = seam.
+            # The position angle completes exactly 360° per physical revolution.
             #
-            # Critical: reset prev_pa at each segment start (after a travel move)
-            # so that the large position-angle jump from the travel doesn't corrupt
-            # the cumulative angle.  We use the segment list for this.
+            # With seam_shift != 0 the phase alternation happens every
+            # cycle_len_revs = layer_alternation + seam_shift / waves_per_rev
+            # revolutions, which is a non-integer that makes the seam diagonal.
+            # We read the matching .log file (same basename, .log suffix) to
+            # get the exact cycle length so the dots follow that diagonal.
+            #
+            # Critical: reset tracking at each segment start (after a travel
+            # move) so purge/skirt accumulation doesn't corrupt the spiral seam.
+            cycle_len_revs = 1.0   # default: one dot per revolution
+            try:
+                log_path = Path(self.path).with_suffix(".log")
+                if log_path.exists():
+                    layer_alt_v   = 1
+                    seam_shift_v  = 0.0
+                    wave_count_v  = None
+                    wave_spacing_v = 0.0
+                    avg_perim_v   = 0.0
+                    with open(log_path, "r") as lf:
+                        for ln in lf:
+                            ln = ln.strip()
+                            if ln.startswith("layer_alternation:"):
+                                layer_alt_v = int(ln.split(":", 1)[1].strip())
+                            elif ln.startswith("seam_shift:"):
+                                seam_shift_v = float(ln.split(":", 1)[1].strip())
+                            elif ln.startswith("wave_count:"):
+                                val = ln.split(":", 1)[1].strip()
+                                if val not in ("null", "None", ""):
+                                    wave_count_v = float(val)
+                            elif ln.startswith("wave_spacing:"):
+                                wave_spacing_v = float(ln.split(":", 1)[1].strip())
+                            elif ln.startswith("avg_perimeter:"):
+                                avg_perim_v = float(ln.split(":", 1)[1].strip())
+                    if wave_count_v and wave_count_v > 0:
+                        wpr = wave_count_v
+                    elif wave_spacing_v > 0 and avg_perim_v > 0:
+                        wpr = avg_perim_v / wave_spacing_v
+                    else:
+                        wpr = 0.0
+                    cycle_len_revs = float(layer_alt_v)
+                    if seam_shift_v != 0 and wpr > 0:
+                        cycle_len_revs += seam_shift_v / wpr
+            except Exception:
+                pass
+
+            seam_interval = cycle_len_revs * 2 * math.pi
+
             seam_pts = np.empty((0, 3), dtype=np.float32)
             if len(xs) > 3:
                 cx = float(pts[:, 0].mean())
@@ -229,9 +271,8 @@ class GCodeLoaderThread(QThread):
                 last_cross = 0.0
 
                 for i, (x, y, z) in enumerate(zip(xs, ys, zs)):
-                    # Reset ALL tracking at each segment start.  Without this,
-                    # the partial-revolution accumulation from the purge line and
-                    # skirt offsets every seam position in the main spiral.
+                    # Reset ALL tracking at each segment start so that purge
+                    # and skirt accumulation doesn't offset the spiral seam.
                     if i in seg_start_set:
                         prev_pa    = None
                         cumul_pos  = 0.0
@@ -243,12 +284,9 @@ class GCodeLoaderThread(QThread):
                         while da >  math.pi: da -= 2 * math.pi
                         while da < -math.pi: da += 2 * math.pi
                         cumul_pos += da
-                        while cumul_pos - last_cross >= 2 * math.pi:
+                        while cumul_pos - last_cross >= seam_interval:
                             seam_xs.append(x); seam_ys.append(y); seam_zs.append(z)
-                            last_cross += 2 * math.pi
-                        while cumul_pos - last_cross <= -2 * math.pi:
-                            seam_xs.append(x); seam_ys.append(y); seam_zs.append(z)
-                            last_cross -= 2 * math.pi
+                            last_cross += seam_interval
                     prev_pa = pa
 
                 if seam_xs:

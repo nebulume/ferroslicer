@@ -282,6 +282,18 @@ class SettingsPanel(QScrollArea):
         self._dbl(f,  "phase_offset",      "Phase offset (%):",   50,  0, 100, 1.0)
         self._dbl(f,  "seam_shift",        "Seam shift (waves):", 0.0, 0.0, 10.0, 0.1)
 
+        sp = QComboBox()
+        sp.addItems(["auto", "front", "back", "left", "right",
+                     "front_right", "front_left", "back_right", "back_left", "sharpest"])
+        sp.setToolTip("Place the phase-alternation seam at a specific corner or\n"
+                      "direction of the model (front=+Y, right=+X).\n"
+                      "'sharpest' finds the most acute geometric corner.")
+        sp.currentIndexChanged.connect(self._emit)
+        self._widgets["seam_position"] = sp
+        f.addRow("Seam position:", sp)
+
+        self._dbl(f, "seam_transition_waves", "Seam blend (waves):", 0.0, 0.0, 10.0, 0.5)
+
         parent.addWidget(g)
 
     def _add_base_group(self, parent):
@@ -398,10 +410,12 @@ class SettingsPanel(QScrollArea):
             "wave_amplitude":    w["wave_amplitude"].value(),
             "wave_pattern":      w["wave_pattern"].currentText(),
             "wave_smoothness":   w["wave_smoothness"].value(),
-            "layer_alternation": w["layer_alternation"].value(),
-            "phase_offset":      w["phase_offset"].value(),
-            "seam_shift":        w["seam_shift"].value(),
-            "base_height":       w["base_height"].value(),
+            "layer_alternation":     w["layer_alternation"].value(),
+            "phase_offset":          w["phase_offset"].value(),
+            "seam_shift":            w["seam_shift"].value(),
+            "seam_position":         w["seam_position"].currentText(),
+            "seam_transition_waves": w["seam_transition_waves"].value(),
+            "base_height":           w["base_height"].value(),
             "base_mode":         w["base_mode"].currentText(),
             "base_transition":   w["base_transition"].currentText(),
         }
@@ -519,10 +533,12 @@ class SettingsPanel(QScrollArea):
 
             _set_combo("wave_pattern",     ms.get("wave_pattern"))
             _set_int("wave_smoothness",    ms.get("wave_smoothness"))
-            _set_int("layer_alternation",  ms.get("layer_alternation"))
-            _set_dbl("phase_offset",       ms.get("phase_offset"))
-            _set_dbl("seam_shift",         ms.get("seam_shift"))
-            _set_dbl("base_height",        ms.get("base_height"))
+            _set_int("layer_alternation",          ms.get("layer_alternation"))
+            _set_dbl("phase_offset",               ms.get("phase_offset"))
+            _set_dbl("seam_shift",                 ms.get("seam_shift"))
+            _set_combo("seam_position",            ms.get("seam_position"))
+            _set_dbl("seam_transition_waves",      ms.get("seam_transition_waves"))
+            _set_dbl("base_height",                ms.get("base_height"))
             _set_combo("base_mode",        ms.get("base_mode"))
             _set_combo("base_transition",  ms.get("base_transition"))
         finally:

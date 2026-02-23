@@ -138,6 +138,8 @@ class SpiralGenerator:
         layer_alternation: int = 2,
         phase_offset: float = 50,
         seam_shift: float = 0.0,
+        seam_revolution_offset: float = 0.0,
+        seam_transition_waves: float = 0.0,
         base_integrity_manager=None,
         wave_asymmetry: bool = False,
         wave_asymmetry_intensity: float = 100,
@@ -179,6 +181,8 @@ class SpiralGenerator:
             int(layer_alternation),
             float(phase_offset),
             float(seam_shift),
+            float(seam_revolution_offset),
+            float(seam_transition_waves),
             float(base_height),
             str(base_mode),
             str(base_transition),
@@ -608,6 +612,8 @@ class SpiralGenerator:
         wave_asymmetry_intensity: float = 100,
         base_integrity_manager = None,
         seam_shift: float = 0.0,
+        seam_revolution_offset: float = 0.0,
+        seam_transition_waves: float = 0.0,
     ) -> List[SpiralPoint]:
         """
         Apply wave pattern to spiral path with optional layer alternation.
@@ -724,19 +730,29 @@ class SpiralGenerator:
             base_phase = (spiral_point.angle * waves_per_rev) % 360.0
 
             # Apply layer alternation and phase offset for diamond mesh pattern
-            # Every N revolutions, apply the phase offset
             if layer_alternation > 0 and phase_offset > 0:
-                # Calculate cycle length in revolutions
-                # Standard: layer_alternation
-                # With shift: layer_alternation + (seam_shift / waves_per_rev)
                 cycle_len_revs = float(layer_alternation)
                 if seam_shift != 0 and waves_per_rev > 0:
                     cycle_len_revs += (seam_shift / waves_per_rev)
 
-                # Determine which alternation cycle we're in (0, 1, 2, ...)
-                cycle = int(spiral_point.revolution / cycle_len_revs)
-                # On odd cycles, apply the phase shift
-                phase_shift_degrees = (cycle % 2) * (phase_offset / 100.0) * 360.0
+                adjusted_rev = spiral_point.revolution + seam_revolution_offset
+                cycle = int(adjusted_rev / cycle_len_revs)
+                cur_shift = (cycle % 2) * (phase_offset / 100.0) * 360.0
+
+                # Smooth transition at seam boundary
+                if seam_transition_waves > 0 and waves_per_rev > 0:
+                    cycle_progress = (adjusted_rev / cycle_len_revs) % 1.0
+                    transition_frac = seam_transition_waves / (waves_per_rev * cycle_len_revs)
+                    if transition_frac > 0 and cycle_progress > 1.0 - transition_frac:
+                        nxt_shift = ((cycle + 1) % 2) * (phase_offset / 100.0) * 360.0
+                        t = (cycle_progress - (1.0 - transition_frac)) / transition_frac
+                        t_smooth = 0.5 - 0.5 * math.cos(math.pi * t)
+                        phase_shift_degrees = cur_shift * (1.0 - t_smooth) + nxt_shift * t_smooth
+                    else:
+                        phase_shift_degrees = cur_shift
+                else:
+                    phase_shift_degrees = cur_shift
+
                 phase = (base_phase + phase_shift_degrees) % 360.0
             else:
                 phase = base_phase

@@ -579,6 +579,8 @@ fn generate_spiral_with_waves(
     layer_alternation: i32,
     phase_offset_pct: f64,
     seam_shift: f64,
+    seam_revolution_offset: f64,
+    seam_transition_waves: f64,
     base_height: f64,
     base_mode: &str,
     base_transition: &str,
@@ -805,9 +807,25 @@ fn generate_spiral_with_waves(
             // Phase calculation
             let base_phase = (wi.angle * waves_per_rev).rem_euclid(360.0);
             let phase = if cycle_len_revs > 0.0 {
-                let cycle = (wi.revolution / cycle_len_revs) as i64;
-                let shift = (cycle % 2) as f64 * (phase_offset_pct / 100.0) * 360.0;
-                (base_phase + shift).rem_euclid(360.0)
+                let adjusted_rev = wi.revolution + seam_revolution_offset;
+                let cycle = (adjusted_rev / cycle_len_revs) as i64;
+                let cur_shift = (cycle % 2) as f64 * (phase_offset_pct / 100.0) * 360.0;
+                // Smooth transition at seam boundary
+                let phase_shift = if seam_transition_waves > 0.0 && waves_per_rev > 0.0 {
+                    let cycle_progress = (adjusted_rev / cycle_len_revs).fract();
+                    let transition_frac = seam_transition_waves / (waves_per_rev * cycle_len_revs);
+                    if transition_frac > 0.0 && cycle_progress > 1.0 - transition_frac {
+                        let nxt_shift = ((cycle + 1) % 2) as f64 * (phase_offset_pct / 100.0) * 360.0;
+                        let t = (cycle_progress - (1.0 - transition_frac)) / transition_frac;
+                        let t_smooth = 0.5 - 0.5 * (t * std::f64::consts::PI).cos();
+                        cur_shift * (1.0 - t_smooth) + nxt_shift * t_smooth
+                    } else {
+                        cur_shift
+                    }
+                } else {
+                    cur_shift
+                };
+                (base_phase + phase_shift).rem_euclid(360.0)
             } else {
                 base_phase
             };
