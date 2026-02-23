@@ -144,6 +144,7 @@ class SlicerWorker(QThread):
                 skirt_height=ps.get("skirt_height", 1),
                 start_gcode_override=merged.get("custom_gcode", {}).get("start_gcode", ""),
                 end_gcode_override=merged.get("custom_gcode", {}).get("end_gcode", ""),
+                first_layer_squish=ps.get("first_layer_squish", 15.0),
             )
 
             base_layer_points = analyzer.layers[0].points if analyzer.layers else None

@@ -27,7 +27,8 @@
         "auto_resample_spiral": true,
         "skirt_enabled": true,
         "skirt_distance": 0.0,
-        "skirt_height": 1
+        "skirt_height": 1,
+        "first_layer_squish": 15.0
     },
     "mesh_settings": {
         "wave_amplitude": 5.0,

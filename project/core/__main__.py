@@ -164,6 +164,12 @@ Examples:
             help="Number of layers for skirt (default 1)"
         )
 
+        parser.add_argument(
+            "--first-layer-squish",
+            type=float,
+            help="First layer squish percentage (0-80%%, default 15). Reduces first layer Z by this amount for better adhesion."
+        )
+
         # Mesh settings
         parser.add_argument(
             "--wave-amplitude",
@@ -554,6 +560,9 @@ Examples:
         if hasattr(args, 'skirt_height') and args.skirt_height is not None:
             config_overrides.setdefault('print_settings', {})['skirt_height'] = args.skirt_height
 
+        if hasattr(args, 'first_layer_squish') and args.first_layer_squish is not None:
+            config_overrides.setdefault('print_settings', {})['first_layer_squish'] = args.first_layer_squish
+
         if hasattr(args, 'wave_amplitude') and args.wave_amplitude:
             config_overrides.setdefault('mesh_settings', {})['wave_amplitude'] = args.wave_amplitude
 
@@ -685,6 +694,8 @@ Examples:
                 cmd += f" --smoothing-threshold {overrides['print_settings']['smoothing_move_threshold']}"
             if 'auto_resample_spiral' in overrides['print_settings'] and overrides['print_settings']['auto_resample_spiral'] is False:
                 cmd += " --no-auto-resample-spiral"
+            if 'first_layer_squish' in overrides['print_settings']:
+                cmd += f" --first-layer-squish {overrides['print_settings']['first_layer_squish']}"
 
         if 'mesh_settings' in overrides:
             if 'wave_amplitude' in overrides['mesh_settings']:

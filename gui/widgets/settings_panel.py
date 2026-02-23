@@ -227,6 +227,7 @@ class SettingsPanel(QScrollArea):
         self._dbl(f, "layer_height",         "Layer height (mm):",   0.5,  0.05, 2.0,   0.05)
         self._int(f, "print_speed",          "Print speed (mm/s):",   35,     5, 500)
         self._int(f, "first_layer_speed_pct","First layer speed (%):", 50,    10, 100)
+        self._dbl(f, "first_layer_squish",   "1st layer squish (%):", 15.0,  0.0, 80.0, 5.0)
         self._int(f, "travel_speed",         "Travel speed (mm/s):",   40,    10, 800)
         self._int(f, "fan_speed",            "Fan speed (%):",          25,     0, 100)
         self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",     12.0,  0.5, 50.0,  0.5)
@@ -428,6 +429,7 @@ class SettingsPanel(QScrollArea):
             "layer_height":           w["layer_height"].value(),
             "print_speed":            w["print_speed"].value(),
             "first_layer_speed_pct":  w["first_layer_speed_pct"].value(),
+            "first_layer_squish":     w["first_layer_squish"].value(),
             "travel_speed":           w["travel_speed"].value(),
             "fan_speed":              w["fan_speed"].value(),
             "max_volumetric_speed":   w["max_volumetric_speed"].value(),
@@ -505,6 +507,7 @@ class SettingsPanel(QScrollArea):
             _set_dbl("layer_height",             ps.get("layer_height"))
             _set_int("print_speed",              ps.get("print_speed"))
             _set_int("first_layer_speed_pct",    ps.get("first_layer_speed_pct"))
+            _set_dbl("first_layer_squish",       ps.get("first_layer_squish"))
             _set_int("travel_speed",             ps.get("travel_speed"))
             _set_int("fan_speed",                ps.get("fan_speed"))
             _set_dbl("max_volumetric_speed",     ps.get("max_volumetric_speed"))

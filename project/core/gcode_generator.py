@@ -47,6 +47,7 @@ class GCodeGenerator:
         z_hop: float = 0.0,
         # ── First layer ───────────────────────────────────────────────────────
         first_layer_speed_pct: int = 50,
+        first_layer_squish: float = 15.0,
     ):
         self.nozzle_diameter = nozzle_diameter
         self.layer_height = layer_height
@@ -74,6 +75,8 @@ class GCodeGenerator:
         self.travel_accel = travel_accel
         self.z_hop = z_hop
         self.first_layer_speed_pct = first_layer_speed_pct
+        self.first_layer_squish = first_layer_squish
+        self._first_layer_z = layer_height * (1.0 - first_layer_squish / 100.0)
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -333,9 +336,9 @@ class GCodeGenerator:
         purge_distance = 20.0
         purge_length = 40.0
         purge_x = max_x + purge_distance  # 20mm to the right of the rightmost perimeter point
-        purge_start = Vector3(purge_x, cy - purge_length/2, self.layer_height)
-        purge_mid = Vector3(purge_x, cy, self.layer_height)
-        purge_end = Vector3(purge_x, cy + purge_length/2, self.layer_height)
+        purge_start = Vector3(purge_x, cy - purge_length/2, self._first_layer_z)
+        purge_mid = Vector3(purge_x, cy, self._first_layer_z)
+        purge_end = Vector3(purge_x, cy + purge_length/2, self._first_layer_z)
         
         # Move to purge start
         self.gcode_lines.append(f"; Move to purge line start ({purge_distance}mm from print)")
@@ -425,7 +428,7 @@ class GCodeGenerator:
             angle = (i / num_points) * 2 * math.pi
             skirt_x = cx + skirt_radius * math.cos(angle)
             skirt_y = cy + skirt_radius * math.sin(angle)
-            skirt_z = self.layer_height  # Skirt at base layer height only
+            skirt_z = self._first_layer_z  # Skirt at squished first layer height
             skirt_points.append(Vector3(skirt_x, skirt_y, skirt_z))
         
         # Close the loop
@@ -444,7 +447,7 @@ class GCodeGenerator:
             # Use nozzle_diameter (not the 1.2× main-print width) so the skirt
             # is a single clean line rather than a wide bead.
             skirt_width = self.nozzle_diameter
-            skirt_e_factor = (self.layer_height * skirt_width) / self.filament_cross_section
+            skirt_e_factor = (self._first_layer_z * skirt_width) / self.filament_cross_section
             for i in range(1, len(skirt_points)):
                 prev_point = skirt_points[i-1]
                 curr_point = skirt_points[i]
@@ -724,7 +727,7 @@ class GCodeGenerator:
         # hover above the bed and the skirt would print below the model.
         offset_z = 0.0
         if model_bounds is not None:
-            offset_z = self.layer_height - model_bounds[0].z
+            offset_z = self._first_layer_z - model_bounds[0].z
 
         return Vector3(offset_x, offset_y, offset_z)
 
