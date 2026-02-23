@@ -1,0 +1,85 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# ── Virtual Environment ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env
+
+# ── Rust ──────────────────────────────────────────────────────────────────────
+slicer_core/target/
+Cargo.lock
+
+# ── Generated output (gcodes, logs) ───────────────────────────────────────────
+output/
+*.gcode
+*.log
+
+# ── Runtime data (prints DB, saved settings, presets) ─────────────────────────
+data/prints.db
+data/app_settings.json
+data/presets.json
+data/slicer_settings.json
+
+# ── STL models (user's own files; test_model.stl is explicitly tracked) ────────
+*.stl
+!test_model.stl
+
+# ── Old/debug artefacts ────────────────────────────────────────────────────────
+_debug_phase*.txt
+generator-script.py
+prompt.xml
+spec.json
+MeshyGen.command
+launch.py
+setup_app.py
+QUICK_START.md
+SETUP_COMPLETE.md
+START_HERE.txt
+USAGE.md
+VISUAL_GUIDE.md
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+*.dmg
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── PyInstaller ───────────────────────────────────────────────────────────────
+*.spec
+dist/
+build/
+
+# ── Packaging artefacts ───────────────────────────────────────────────────────
+*.AppImage
+*.app/
