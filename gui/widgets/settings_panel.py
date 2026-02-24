@@ -61,6 +61,7 @@ class SettingsPanel(QScrollArea):
         self._add_printer_group(layout)
         self._add_motion_group(layout)
         self._add_print_group(layout)
+        self._add_seam_ramp_group(layout)
         self._add_mode_group(layout)
         self._add_wave_group(layout)
         self._add_base_group(layout)
@@ -229,6 +230,49 @@ class SettingsPanel(QScrollArea):
         self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",      12.0,  0.5, 50.0, 0.5,
                   tip="Maximum plastic flow rate in mm³/s. Limits print speed to prevent under-extrusion.\n"
                       "Your hotend's capability — typically 8–15mm³/s for standard, up to 40+ for high-flow")
+        parent.addWidget(g)
+
+    def _add_seam_ramp_group(self, parent):
+        g = QGroupBox("Seam Speed Ramp")
+        f = QFormLayout(g)
+
+        chk = QCheckBox("Enable speed ramp after alternation")
+        chk.setChecked(False)
+        chk.setToolTip(
+            "After each layer-alternation cycle boundary, ramp speed back up\n"
+            "over the specified number of layers.\n"
+            "Example with alternation=2, ramp=[25,50,100]:\n"
+            "  Cycle start → 25% → 50% → 100% → repeat"
+        )
+        chk.stateChanged.connect(self._emit)
+        self._widgets["seam_ramp_enabled"] = chk
+        f.addRow("", chk)
+
+        # Individual speed % fields for up to 4 ramp layers
+        defaults = [25, 50, 75, 100]
+        for n in range(1, 5):
+            key = f"seam_ramp_pct_{n}"
+            spin = QSpinBox()
+            spin.setRange(1, 200)
+            spin.setValue(defaults[n - 1])
+            spin.setSuffix(" %")
+            spin.setToolTip(
+                f"Print speed for layer {n} after each alternation boundary\n"
+                f"(% of the main print speed).\n"
+                f"Set to 100% to not slow this layer."
+            )
+            spin.valueChanged.connect(self._emit)
+            self._widgets[key] = spin
+            f.addRow(f"  Layer {n} speed:", spin)
+
+        note = QLabel(
+            "Tip: set ramp layers ≤ layer alternation period for the ramp\n"
+            "to complete before the next cycle starts."
+        )
+        note.setStyleSheet("color: #667; font-size: 10px;")
+        note.setWordWrap(True)
+        f.addRow("", note)
+
         parent.addWidget(g)
 
     def _add_mode_group(self, parent):
@@ -475,6 +519,8 @@ class SettingsPanel(QScrollArea):
             "skirt_enabled":          w["skirt_enabled"].isChecked(),
             "skirt_distance":         w["skirt_distance"].value(),
             "skirt_height":           w["skirt_height"].value(),
+            "seam_ramp_enabled":      w["seam_ramp_enabled"].isChecked(),
+            "seam_ramp_pcts":         [w[f"seam_ramp_pct_{n}"].value() for n in range(1, 5)],
         }
         if is_vase:
             print_s["spiral_points_per_degree"] = w["spiral_points_per_degree"].value()
@@ -537,6 +583,13 @@ class SettingsPanel(QScrollArea):
                 w["skirt_enabled"].setChecked(bool(ps["skirt_enabled"]))
             _set_dbl("skirt_distance", ps.get("skirt_distance"))
             _set_int("skirt_height",   ps.get("skirt_height"))
+
+            if ps.get("seam_ramp_enabled") is not None:
+                w["seam_ramp_enabled"].setChecked(bool(ps["seam_ramp_enabled"]))
+            ramp_pcts = ps.get("seam_ramp_pcts", [])
+            for n in range(1, 5):
+                if n - 1 < len(ramp_pcts):
+                    w[f"seam_ramp_pct_{n}"].setValue(int(ramp_pcts[n - 1]))
 
             _set_dbl("wave_amplitude",   ms.get("wave_amplitude"))
             if "wave_count" in ms and ms["wave_count"] is not None:

@@ -52,6 +52,10 @@ class GCodeGenerator:
         firmware: str = "klipper",      # "klipper" | "marlin" | "rrf"
         retract_dist: float = 0.8,      # mm
         retract_speed: float = 40.0,    # mm/s
+        # ── Seam speed ramp ───────────────────────────────────────────────────
+        seam_ramp_enabled: bool = False,
+        seam_ramp_pcts: list = None,    # e.g. [25, 50, 75, 100] — % of print_speed
+        layer_alternation: int = 2,     # from mesh_settings
     ):
         self.nozzle_diameter = nozzle_diameter
         self.layer_height = layer_height
@@ -84,6 +88,9 @@ class GCodeGenerator:
         self.firmware = firmware.lower()
         self.retract_dist = retract_dist
         self.retract_speed = retract_speed
+        self.seam_ramp_enabled = seam_ramp_enabled
+        self.seam_ramp_pcts    = list(seam_ramp_pcts) if seam_ramp_pcts else []
+        self.layer_alternation = max(1, int(layer_alternation))
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -185,8 +192,29 @@ class GCodeGenerator:
                 e_factor = (lh * ew) / fcs
 
                 # First-layer speed: slow down everything within the first layer height
-                first_layer_z_thresh = zs[0] + lh   # anything at/below this is "first layer"
+                z_base           = float(zs[0])
+                first_layer_z_thresh = z_base + lh   # anything at/below this is "first layer"
                 spd_f_first = int(spd * self.first_layer_speed_pct / 100.0 * 60)
+
+                # Pre-build a speed lookup table indexed by layer index so the inner
+                # loop stays branchless for the common (no-ramp) case.
+                _ramp_on   = self.seam_ramp_enabled and bool(self.seam_ramp_pcts)
+                _ramp_pcts = self.seam_ramp_pcts
+                _alt       = self.layer_alternation
+                _max_li    = int((float(max(zs)) - z_base) / lh) + 3
+                _speed_lut = []
+                for _li in range(_max_li):
+                    _z_li = z_base + _li * lh
+                    if _z_li <= first_layer_z_thresh:
+                        _speed_lut.append(spd_f_first)
+                    elif _ramp_on:
+                        _pos = _li % _alt
+                        if _pos < len(_ramp_pcts):
+                            _speed_lut.append(int(spd * _ramp_pcts[_pos] / 100.0 * 60))
+                        else:
+                            _speed_lut.append(spd_f)
+                    else:
+                        _speed_lut.append(spd_f)
 
                 cx = float(self.current_position.x)
                 cy = float(self.current_position.y)
@@ -195,6 +223,7 @@ class GCodeGenerator:
 
                 n = len(xs)
                 lines = self.gcode_lines
+                _prev_f = -1
                 for i in range(1, n):
                     tx = xs[i] + ox
                     ty = ys[i] + oy
@@ -206,10 +235,18 @@ class GCodeGenerator:
                     if seg_len > 0.001:
                         extrusion = seg_len * e_factor
                         total_e += extrusion
-                        f_val = spd_f_first if zs[i] <= first_layer_z_thresh else spd_f
-                        lines.append(
-                            f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
-                        )
+                        _li = int((float(zs[i]) - z_base) / lh)
+                        _li = min(_li, _max_li - 1)
+                        f_val = _speed_lut[_li]
+                        if f_val != _prev_f:
+                            lines.append(
+                                f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
+                            )
+                            _prev_f = f_val
+                        else:
+                            lines.append(
+                                f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
+                            )
                     cx, cy, cz = tx, ty, tz
 
                 self.current_position = Vector3(cx, cy, cz)
@@ -643,14 +680,16 @@ class GCodeGenerator:
 
             if segment_length > 0.001:
                 extrusion = self._calculate_extrusion(segment_length)
-                # Slow down first layer for adhesion
+                # Determine effective speed for this layer
+                orig = self.print_speed
                 if layer_idx == 0:
-                    orig = self.print_speed
                     self.print_speed = orig * self.first_layer_speed_pct / 100.0
-                    self._add_move(target_position, extrusion_amount=extrusion)
-                    self.print_speed = orig
-                else:
-                    self._add_move(target_position, extrusion_amount=extrusion)
+                elif self.seam_ramp_enabled and self.seam_ramp_pcts:
+                    pos = layer_idx % self.layer_alternation
+                    if pos < len(self.seam_ramp_pcts):
+                        self.print_speed = orig * self.seam_ramp_pcts[pos] / 100.0
+                self._add_move(target_position, extrusion_amount=extrusion)
+                self.print_speed = orig
 
         self.gcode_lines.append("")
 

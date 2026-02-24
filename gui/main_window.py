@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MeshyGen — Mesh Vase Slicer")
+        self.setWindowTitle("FerroSlicer")
         self.resize(1480, 960)
 
         self._stl_path:    str = ""

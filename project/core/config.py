@@ -77,7 +77,9 @@ class Config:
                 "z_hop": 0.0,
                 "skirt_enabled": True,
                 "skirt_distance": 0.0,
-                "skirt_height": 1
+                "skirt_height": 1,
+                "seam_ramp_enabled": False,
+                "seam_ramp_pcts": [25, 50, 75, 100]
             },
             "mesh_settings": {
                 "wave_amplitude": 2.0,

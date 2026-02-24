@@ -146,6 +146,9 @@ class SlicerWorker(QThread):
                 firmware=merged.get("printer_profile", {}).get("firmware", "klipper"),
                 retract_dist=merged.get("printer_profile", {}).get("retract_dist", 0.8),
                 retract_speed=merged.get("printer_profile", {}).get("retract_speed", 40.0),
+                seam_ramp_enabled=ps.get("seam_ramp_enabled", False),
+                seam_ramp_pcts=ps.get("seam_ramp_pcts", [25, 50, 75, 100]),
+                layer_alternation=ms.get("layer_alternation", 2),
             )
 
             base_layer_points = analyzer.layers[0].points if analyzer.layers else None
