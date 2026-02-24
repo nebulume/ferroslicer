@@ -52,6 +52,14 @@ class GCodeGenerator:
         firmware: str = "klipper",      # "klipper" | "marlin" | "rrf"
         retract_dist: float = 0.8,      # mm
         retract_speed: float = 40.0,    # mm/s
+        # ── Seam speed ramp ───────────────────────────────────────────────────
+        seam_ramp_enabled: bool = False,
+        seam_ramp_pcts: list = None,    # e.g. [25, 50, 75, 100] — % of print_speed
+        layer_alternation: int = 2,     # from mesh_settings
+        seam_revolution_offset: float = 0.0,  # phase offset from seam_position setting
+        seam_cycle_len: float = 0.0,    # alternation cycle length in revolutions (0 = use layer_alternation)
+        # ── Skirt ─────────────────────────────────────────────────────────────
+        skirt_loops: int = 1,           # number of concentric skirt loops side-by-side
     ):
         self.nozzle_diameter = nozzle_diameter
         self.layer_height = layer_height
@@ -84,6 +92,12 @@ class GCodeGenerator:
         self.firmware = firmware.lower()
         self.retract_dist = retract_dist
         self.retract_speed = retract_speed
+        self.seam_ramp_enabled        = seam_ramp_enabled
+        self.seam_ramp_pcts           = list(seam_ramp_pcts) if seam_ramp_pcts else []
+        self.layer_alternation        = max(1, int(layer_alternation))
+        self.seam_revolution_offset   = float(seam_revolution_offset)
+        self.seam_cycle_len           = float(seam_cycle_len) if seam_cycle_len > 0 else float(layer_alternation)
+        self.skirt_loops              = max(1, int(skirt_loops))
 
         # Calculated values
         self.extrusion_width = nozzle_diameter * 1.2
@@ -185,8 +199,29 @@ class GCodeGenerator:
                 e_factor = (lh * ew) / fcs
 
                 # First-layer speed: slow down everything within the first layer height
-                first_layer_z_thresh = zs[0] + lh   # anything at/below this is "first layer"
+                z_base           = float(zs[0])
+                first_layer_z_thresh = z_base + lh   # anything at/below this is "first layer"
                 spd_f_first = int(spd * self.first_layer_speed_pct / 100.0 * 60)
+
+                # Revolution-based speed ramp — resets exactly at the seam.
+                # Uses _revs + seam_revolution_offset (mirrors the Rust wave phase logic)
+                # so the speed change is seam-synchronised with the wave alternation.
+                # Allow spiral_points to carry updated offset/cycle from the worker.
+                _ramp_on        = self.seam_ramp_enabled and bool(self.seam_ramp_pcts)
+                _ramp_pcts      = self.seam_ramp_pcts
+                _cycle_len      = getattr(spiral_points, '_cycle_len_revs', self.seam_cycle_len)
+                _seam_off       = getattr(spiral_points, '_seam_revolution_offset', self.seam_revolution_offset)
+                revs            = spiral_points._revs           # cumulative revolution count per point
+
+                # Build speed LUT indexed by integer position within the alternation cycle.
+                # Entries 0..len(ramp_pcts)-1 use ramp speeds; remaining use full speed.
+                _max_pos = max(1, int(math.ceil(_cycle_len)))
+                _rev_lut = []
+                for _pos in range(_max_pos):
+                    if _ramp_on and _pos < len(_ramp_pcts):
+                        _rev_lut.append(int(spd * _ramp_pcts[_pos] / 100.0 * 60))
+                    else:
+                        _rev_lut.append(spd_f)
 
                 cx = float(self.current_position.x)
                 cy = float(self.current_position.y)
@@ -195,6 +230,7 @@ class GCodeGenerator:
 
                 n = len(xs)
                 lines = self.gcode_lines
+                _prev_f = -1
                 for i in range(1, n):
                     tx = xs[i] + ox
                     ty = ys[i] + oy
@@ -206,10 +242,21 @@ class GCodeGenerator:
                     if seg_len > 0.001:
                         extrusion = seg_len * e_factor
                         total_e += extrusion
-                        f_val = spd_f_first if zs[i] <= first_layer_z_thresh else spd_f
-                        lines.append(
-                            f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
-                        )
+                        if zs[i] <= first_layer_z_thresh:
+                            f_val = spd_f_first
+                        else:
+                            # Position within cycle: same formula as Rust wave phase logic
+                            _pos = int((float(revs[i]) + _seam_off) % _cycle_len)
+                            f_val = _rev_lut[min(_pos, _max_pos - 1)]
+                        if f_val != _prev_f:
+                            lines.append(
+                                f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
+                            )
+                            _prev_f = f_val
+                        else:
+                            lines.append(
+                                f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
+                            )
                     cx, cy, cz = tx, ty, tz
 
                 self.current_position = Vector3(cx, cy, cz)
@@ -458,53 +505,48 @@ class GCodeGenerator:
                 for p in first_rev_points
             ) / len(first_rev_points)
         
-        # Skirt radius = spiral radius + nozzle_width/2 + skirt_distance
-        # nozzle_width = nozzle_diameter (assumes line width = nozzle diameter for 0.5mm layer)
+        # Base skirt radius: spiral + half nozzle-width gap + configured distance
         nozzle_width = self.nozzle_diameter
-        skirt_radius = spiral_radius + (nozzle_width / 2.0) + self.skirt_distance
-        
-        # Generate skirt as a high-resolution circular loop
-        num_points = 360  # One point per degree for smooth circle
-        skirt_points = []
-        
-        for i in range(num_points):
-            angle = (i / num_points) * 2 * math.pi
-            skirt_x = cx + skirt_radius * math.cos(angle)
-            skirt_y = cy + skirt_radius * math.sin(angle)
-            skirt_z = self._first_layer_z  # Skirt at squished first layer height
-            skirt_points.append(Vector3(skirt_x, skirt_y, skirt_z))
-        
-        # Close the loop
-        if skirt_points:
-            skirt_points.append(skirt_points[0])
-        
-        # Print skirt loop
-        if skirt_points:
-            self.gcode_lines.append("; Move to skirt start")
+        base_skirt_radius = spiral_radius + (nozzle_width / 2.0) + self.skirt_distance
+
+        num_points = 360  # one point per degree for a smooth circle
+        skirt_width = self.nozzle_diameter
+        skirt_e_factor = (self._first_layer_z * skirt_width) / self.filament_cross_section
+
+        for loop_idx in range(self.skirt_loops):
+            skirt_radius = base_skirt_radius + loop_idx * nozzle_width
+
+            skirt_points = []
+            for i in range(num_points):
+                angle = (i / num_points) * 2 * math.pi
+                skirt_points.append(Vector3(
+                    cx + skirt_radius * math.cos(angle),
+                    cy + skirt_radius * math.sin(angle),
+                    self._first_layer_z,
+                ))
+            skirt_points.append(skirt_points[0])  # close the loop
+
+            loop_lbl = f"loop {loop_idx + 1}/{self.skirt_loops}"
+            self.gcode_lines.append(f"; Move to skirt start ({loop_lbl})")
             self._add_move(skirt_points[0], is_travel=True)
-            
-            self.gcode_lines.append("; Unretract before skirt")
-            self.gcode_lines.append(self._unretract())
-            
-            # Print skirt loop with extrusion.
-            # Use nozzle_diameter (not the 1.2× main-print width) so the skirt
-            # is a single clean line rather than a wide bead.
-            skirt_width = self.nozzle_diameter
-            skirt_e_factor = (self._first_layer_z * skirt_width) / self.filament_cross_section
+
+            if loop_idx == 0:
+                self.gcode_lines.append("; Unretract before skirt")
+                self.gcode_lines.append(self._unretract())
+
             for i in range(1, len(skirt_points)):
-                prev_point = skirt_points[i-1]
+                prev_point = skirt_points[i - 1]
                 curr_point = skirt_points[i]
                 seg_len = math.sqrt(
-                    (curr_point.x - prev_point.x)**2 +
-                    (curr_point.y - prev_point.y)**2 +
-                    (curr_point.z - prev_point.z)**2
+                    (curr_point.x - prev_point.x) ** 2 +
+                    (curr_point.y - prev_point.y) ** 2 +
+                    (curr_point.z - prev_point.z) ** 2
                 )
-                extrusion = seg_len * skirt_e_factor
-                self._add_move(curr_point, extrusion_amount=extrusion)
-            
-            self.gcode_lines.append("; Retract after skirt")
-            self.gcode_lines.append(self._retract())
-            self.gcode_lines.append("")
+                self._add_move(curr_point, extrusion_amount=seg_len * skirt_e_factor)
+
+        self.gcode_lines.append("; Retract after skirt")
+        self.gcode_lines.append(self._retract())
+        self.gcode_lines.append("")
 
     def _add_purge_line(
         self,
@@ -643,14 +685,16 @@ class GCodeGenerator:
 
             if segment_length > 0.001:
                 extrusion = self._calculate_extrusion(segment_length)
-                # Slow down first layer for adhesion
+                # Determine effective speed for this layer
+                orig = self.print_speed
                 if layer_idx == 0:
-                    orig = self.print_speed
                     self.print_speed = orig * self.first_layer_speed_pct / 100.0
-                    self._add_move(target_position, extrusion_amount=extrusion)
-                    self.print_speed = orig
-                else:
-                    self._add_move(target_position, extrusion_amount=extrusion)
+                elif self.seam_ramp_enabled and self.seam_ramp_pcts:
+                    pos = layer_idx % self.layer_alternation
+                    if pos < len(self.seam_ramp_pcts):
+                        self.print_speed = orig * self.seam_ramp_pcts[pos] / 100.0
+                self._add_move(target_position, extrusion_amount=extrusion)
+                self.print_speed = orig
 
         self.gcode_lines.append("")
 

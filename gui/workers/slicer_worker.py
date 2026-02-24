@@ -146,6 +146,10 @@ class SlicerWorker(QThread):
                 firmware=merged.get("printer_profile", {}).get("firmware", "klipper"),
                 retract_dist=merged.get("printer_profile", {}).get("retract_dist", 0.8),
                 retract_speed=merged.get("printer_profile", {}).get("retract_speed", 40.0),
+                seam_ramp_enabled=ps.get("seam_ramp_enabled", False),
+                seam_ramp_pcts=ps.get("seam_ramp_pcts", [25, 50, 75, 100]),
+                layer_alternation=ms.get("layer_alternation", 2),
+                skirt_loops=ps.get("skirt_loops", 1),
             )
 
             base_layer_points = analyzer.layers[0].points if analyzer.layers else None
@@ -167,6 +171,13 @@ class SlicerWorker(QThread):
                 wave_asymmetry = ms.get("wave_asymmetry", False)
                 wave_asym_int = ms.get("wave_asymmetry_intensity", 100)
                 seam_shift = ms.get("seam_shift", 0.0)
+                seam_pos = ms.get("seam_position", "auto")
+                seam_transition_waves = ms.get("seam_transition_waves", 0.0)
+                wave_skew = (
+                    float(ms.get("wave_skew", 0.0)) / 100.0
+                    if ms.get("wave_skew_enabled", False)
+                    else 0.0
+                )
 
                 if wave_count:
                     waves_per_rev = float(wave_count)
@@ -175,6 +186,15 @@ class SlicerWorker(QThread):
                     waves_per_rev = avg_perim / wave_spacing if avg_perim > 0 else 0.0
                 else:
                     waves_per_rev = 0.0
+
+                # Compute cycle length and seam revolution offset (mirrors slicer.py)
+                cycle_len_revs = float(layer_alt)
+                if seam_shift != 0.0 and waves_per_rev > 0:
+                    cycle_len_revs += seam_shift / waves_per_rev
+                from project.core.slicer import _compute_seam_revolution_offset
+                seam_revolution_offset = _compute_seam_revolution_offset(
+                    analyzer.layers, seam_pos, cycle_len_revs
+                )
 
                 spiral_gen = SpiralGenerator(
                     analyzer.layers,
@@ -194,10 +214,16 @@ class SlicerWorker(QThread):
                         layer_alternation=layer_alt,
                         phase_offset=phase_offset,
                         seam_shift=seam_shift,
+                        seam_revolution_offset=seam_revolution_offset,
+                        seam_transition_waves=seam_transition_waves,
                         base_integrity_manager=base_mgr,
                         wave_asymmetry=wave_asymmetry,
                         wave_asymmetry_intensity=wave_asym_int,
+                        wave_skew=wave_skew,
                     )
+                    # Store seam params on spiral so GCodeGenerator can use them
+                    modified_spiral._seam_revolution_offset = seam_revolution_offset
+                    modified_spiral._cycle_len_revs = cycle_len_revs
                 else:
                     spiral_points = spiral_gen.generate_spiral_path()
                     modified_spiral = spiral_gen.apply_wave_to_spiral(

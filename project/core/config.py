@@ -77,7 +77,10 @@ class Config:
                 "z_hop": 0.0,
                 "skirt_enabled": True,
                 "skirt_distance": 0.0,
-                "skirt_height": 1
+                "skirt_height": 1,
+                "skirt_loops": 1,
+                "seam_ramp_enabled": False,
+                "seam_ramp_pcts": [25, 50, 75, 100]
             },
             "mesh_settings": {
                 "wave_amplitude": 2.0,
@@ -87,6 +90,8 @@ class Config:
                 "layer_alternation": 2,
                 "phase_offset": 50,
                 "seam_shift": 0.0,
+                "wave_skew_enabled": False,
+                "wave_skew": 0.0,
                 "start_phase": "random",  # Options: random, aligned
                 "base_height": 28.0,
                 "base_mode": "fewer_gaps",  # Options: tighter_waves, fewer_gaps, solid_then_mesh

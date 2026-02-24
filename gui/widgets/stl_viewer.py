@@ -697,7 +697,7 @@ class _STLViewerGL(QOpenGLWidget):
         dy = event.position().y() - self._last_mouse.y()
         self._last_mouse = event.position()
         if self._mouse_button == Qt.MouseButton.LeftButton:
-            self.rot_y += dx * 0.5
+            self.rot_y -= dx * 0.5
             self.rot_x -= dy * 0.5
             self.update()
         elif self._mouse_button == Qt.MouseButton.RightButton:

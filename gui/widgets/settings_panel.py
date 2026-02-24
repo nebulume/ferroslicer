@@ -12,7 +12,18 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QSlider, QSizePolicy, QPushButton, QInputDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale, QByteArray
+from PyQt6.QtGui import QPixmap, QPainter
+from PyQt6.QtSvg import QSvgRenderer
+
+def _res_path() -> Path:
+    """Path to gui/resources — works in both dev and frozen .app."""
+    if getattr(sys, "frozen", False):
+        import sys as _sys
+        return Path(_sys._MEIPASS) / "gui" / "resources"
+    # settings_panel.py lives in gui/widgets/ → up two levels → gui/resources
+    return Path(__file__).parent.parent / "resources"
+
 
 def _user_data_dir() -> Path:
     """Writable directory for user settings — redirects to ~/Documents/FerroSlicer/ when frozen."""
@@ -57,10 +68,12 @@ class SettingsPanel(QScrollArea):
         self._save_timer.setInterval(500)
         self._save_timer.timeout.connect(self._save_to_disk)
 
+        self._add_logo_header(layout)
         self._add_presets_bar(layout)
         self._add_printer_group(layout)
         self._add_motion_group(layout)
         self._add_print_group(layout)
+        self._add_seam_ramp_group(layout)
         self._add_mode_group(layout)
         self._add_wave_group(layout)
         self._add_base_group(layout)
@@ -71,6 +84,58 @@ class SettingsPanel(QScrollArea):
 
         # Restore last session's values (silently ignore if file missing/corrupt)
         self._load_from_disk()
+
+    # ── Logo header ──────────────────────────────────────────────────────────
+
+    def _add_logo_header(self, parent):
+        """Compact branded header: SVG logo + app name + tagline."""
+        header = QWidget()
+        header.setFixedHeight(56)
+        header.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            " stop:0 #1a3a5c, stop:1 #122840);"
+            "border-bottom: 1px solid #3a6a9a;"
+        )
+        header.setAutoFillBackground(True)
+        h = QHBoxLayout(header)
+        h.setContentsMargins(8, 4, 8, 4)
+        h.setSpacing(8)
+
+        # Render the SVG logo into a 44×44 QPixmap
+        logo_lbl = QLabel()
+        logo_lbl.setFixedSize(44, 44)
+        svg_path = _res_path() / "ferroslicer_logo.svg"
+        if svg_path.exists():
+            renderer = QSvgRenderer(str(svg_path))
+            pix = QPixmap(44, 44)
+            pix.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pix)
+            renderer.render(painter)
+            painter.end()
+            logo_lbl.setPixmap(pix)
+        h.addWidget(logo_lbl)
+
+        # App name + tagline
+        text_col = QWidget()
+        text_layout = QVBoxLayout(text_col)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(0)
+
+        name_lbl = QLabel("FerroSlicer")
+        name_lbl.setStyleSheet(
+            "color: #a8e8ff; font-size: 15px; font-weight: 700;"
+            "letter-spacing: 1px; background: transparent;"
+        )
+        text_layout.addWidget(name_lbl)
+
+        sub_lbl = QLabel("mesh vase slicer")
+        sub_lbl.setStyleSheet(
+            "color: #6aaccc; font-size: 10px; background: transparent;"
+        )
+        text_layout.addWidget(sub_lbl)
+
+        h.addWidget(text_col, stretch=1)
+        parent.addWidget(header)
 
     # ── Presets bar ──────────────────────────────────────────────────────────
 
@@ -231,18 +296,65 @@ class SettingsPanel(QScrollArea):
                       "Your hotend's capability — typically 8–15mm³/s for standard, up to 40+ for high-flow")
         parent.addWidget(g)
 
+    def _add_seam_ramp_group(self, parent):
+        g = QGroupBox("Seam Speed Ramp")
+        f = QFormLayout(g)
+
+        chk = QCheckBox("Enable speed ramp after alternation")
+        chk.setChecked(False)
+        chk.setToolTip(
+            "After each layer-alternation cycle boundary, ramp speed back up\n"
+            "over the specified number of layers.\n"
+            "Example with alternation=2, ramp=[25,50,100]:\n"
+            "  Cycle start → 25% → 50% → 100% → repeat"
+        )
+        chk.stateChanged.connect(self._emit)
+        self._widgets["seam_ramp_enabled"] = chk
+        f.addRow("", chk)
+
+        # Individual speed % fields for up to 4 ramp layers
+        defaults = [25, 50, 75, 100]
+        for n in range(1, 5):
+            key = f"seam_ramp_pct_{n}"
+            spin = QSpinBox()
+            spin.setRange(1, 200)
+            spin.setValue(defaults[n - 1])
+            spin.setSuffix(" %")
+            spin.setFixedWidth(self._SPIN_W)
+            spin.setToolTip(
+                f"Print speed for layer {n} after each alternation boundary\n"
+                f"(% of the main print speed).\n"
+                f"Set to 100% to not slow this layer."
+            )
+            spin.valueChanged.connect(self._emit)
+            self._widgets[key] = spin
+            f.addRow(f"  Layer {n} speed:", spin)
+
+        note = QLabel(
+            "Tip: set ramp layers ≤ layer alternation period for the ramp\n"
+            "to complete before the next cycle starts."
+        )
+        note.setStyleSheet("color: #667; font-size: 10px;")
+        note.setWordWrap(True)
+        f.addRow("", note)
+
+        parent.addWidget(g)
+
     def _add_mode_group(self, parent):
         g = QGroupBox("Printing Mode")
         f = QFormLayout(g)
 
+        _mode_tip = ("Spiral Vase: single-wall continuous spiral, no seam, ideal for vases.\n"
+                     "Layer Mesh: traditional layer-by-layer with wave pattern on each layer")
         cb = QComboBox()
         cb.addItems(["Spiral Vase (continuous)", "Layer Mesh"])
-        cb.setToolTip("Spiral Vase: single-wall continuous spiral, no seam, ideal for vases.\n"
-                      "Layer Mesh: traditional layer-by-layer with wave pattern on each layer")
+        cb.setToolTip(_mode_tip)
         cb.currentIndexChanged.connect(self._on_mode_change)
         self._widgets["vase_mode"] = cb
         cb.currentIndexChanged.connect(self._emit)
-        f.addRow("Mode:", cb)
+        _mode_lbl = QLabel("Mode:")
+        _mode_lbl.setToolTip(_mode_tip)
+        f.addRow(_mode_lbl, cb)
 
         dbl = self._dbl(f, "spiral_points_per_degree", "Spiral res (pts/°):", 1.2, 0.1, 5.0, 0.1,
                         tip="Sampling resolution of the spiral path. 1.2 pts/° = ~432 points/revolution.\n"
@@ -259,15 +371,18 @@ class SettingsPanel(QScrollArea):
                   tip="Peak-to-trough height of the surface waves in mm. 0 = smooth cylinder")
 
         # Wave frequency: count OR spacing
+        _freq_tip = ("How to set wave frequency:\n"
+                     "Per revolution: fixed number of waves around the circumference\n"
+                     "Per distance: spacing between wave peaks in mm (adapts to model size)")
         freq_cb = QComboBox()
         freq_cb.addItems(["Per revolution (count)", "Per distance (spacing mm)"])
-        freq_cb.setToolTip("How to set wave frequency:\n"
-                           "Per revolution: fixed number of waves around the circumference\n"
-                           "Per distance: spacing between wave peaks in mm (adapts to model size)")
+        freq_cb.setToolTip(_freq_tip)
         freq_cb.currentIndexChanged.connect(self._on_freq_mode_change)
         self._widgets["wave_freq_mode"] = freq_cb
         freq_cb.currentIndexChanged.connect(self._emit)
-        f.addRow("Frequency mode:", freq_cb)
+        _freq_lbl = QLabel("Frequency mode:")
+        _freq_lbl.setToolTip(_freq_tip)
+        f.addRow(_freq_lbl, freq_cb)
 
         self._wave_count_spin = self._int(f, "wave_count",   "Waves / revolution:", 120, 1, 2000,
                                           tip="Number of complete wave cycles around the model per revolution")
@@ -280,12 +395,15 @@ class SettingsPanel(QScrollArea):
         if self._spacing_label:
             self._spacing_label.setVisible(False)
 
+        _ptn_tip = "Wave shape:\nSine = smooth rounded waves\nTriangular = sharp V-peaks\nSawtooth = asymmetric ramp up, sharp drop"
         ptn = QComboBox()
         ptn.addItems(["sine", "triangular", "sawtooth"])
-        ptn.setToolTip("Wave shape:\nSine = smooth rounded waves\nTriangular = sharp V-peaks\nSawtooth = asymmetric ramp up, sharp drop")
+        ptn.setToolTip(_ptn_tip)
         ptn.currentIndexChanged.connect(self._emit)
         self._widgets["wave_pattern"] = ptn
-        f.addRow("Pattern:", ptn)
+        _ptn_lbl = QLabel("Pattern:")
+        _ptn_lbl.setToolTip(_ptn_tip)
+        f.addRow(_ptn_lbl, ptn)
 
         self._int(f,  "wave_smoothness",   "Smoothness (1-10):",  10,  1, 10,
                   tip="How smooth the wave shape is. 1 = sharp pointy peaks, 10 = very round and gradual")
@@ -299,19 +417,54 @@ class SettingsPanel(QScrollArea):
                   tip="Extend the alternation cycle by this many waves to move the seam to a different position.\n"
                       "0 = no shift")
 
+        _sp_tip = ("Place the phase-alternation seam at a specific corner or\n"
+                   "direction of the model (front=+Y, right=+X).\n"
+                   "'sharpest' finds the most acute geometric corner.")
         sp = QComboBox()
         sp.addItems(["auto", "front", "back", "left", "right",
                      "front_right", "front_left", "back_right", "back_left", "sharpest"])
-        sp.setToolTip("Place the phase-alternation seam at a specific corner or\n"
-                      "direction of the model (front=+Y, right=+X).\n"
-                      "'sharpest' finds the most acute geometric corner.")
+        sp.setToolTip(_sp_tip)
         sp.currentIndexChanged.connect(self._emit)
         self._widgets["seam_position"] = sp
-        f.addRow("Seam position:", sp)
+        _sp_lbl = QLabel("Seam position:")
+        _sp_lbl.setToolTip(_sp_tip)
+        f.addRow(_sp_lbl, sp)
 
         self._dbl(f, "seam_transition_waves", "Seam blend (waves):", 0.0, 0.0, 10.0, 0.5,
                   tip="Blend the seam phase transition over this many waves.\n"
                       "0 = hard step. 2.0 = gradual two-wave crossfade (less visible seam)")
+
+        # ── Wave skew (shape warp to combat running-wave artifact) ────────────
+        skew_tip = (
+            "Warps the wave shape so the peak occurs earlier or later in each cycle,\n"
+            "compensating for the 'running wave' distortion some printers produce.\n\n"
+            "When printing curved paths, acceleration/deceleration can stretch\n"
+            "one side of each wave, making the rise slower than the fall (or vice versa).\n\n"
+            "Positive values move the peak later in the cycle (slow rise / fast fall).\n"
+            "Negative values move the peak earlier (fast rise / slow fall).\n\n"
+            "Start with small values (±10–30) and compare printed output to the\n"
+            "on-screen preview until the peaks look symmetric."
+        )
+        skew_chk = QCheckBox("Enable wave skew")
+        skew_chk.setChecked(False)
+        skew_chk.setToolTip(skew_tip)
+        skew_chk.stateChanged.connect(self._emit)
+        self._widgets["wave_skew_enabled"] = skew_chk
+        f.addRow("", skew_chk)
+
+        skew_spin = QDoubleSpinBox()
+        skew_spin.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+        skew_spin.setRange(-100.0, 100.0)
+        skew_spin.setSingleStep(5.0)
+        skew_spin.setDecimals(1)
+        skew_spin.setValue(0.0)
+        skew_spin.setFixedWidth(self._SPIN_W)
+        skew_spin.setToolTip(skew_tip)
+        skew_spin.valueChanged.connect(self._emit)
+        self._widgets["wave_skew"] = skew_spin
+        skew_lbl = QLabel("Wave skew strength:")
+        skew_lbl.setToolTip(skew_tip)
+        f.addRow(skew_lbl, skew_spin)
 
         parent.addWidget(g)
 
@@ -322,25 +475,31 @@ class SettingsPanel(QScrollArea):
                   tip="Height of the reinforced base zone before mesh waves start. "
                       "The base uses reduced or no amplitude for structural integrity")
 
+        _bm_tip = ("Base reinforcement mode:\n"
+                   "Fewer gaps: reduces wave amplitude to minimize gaps\n"
+                   "Tighter waves: compresses wave spacing in the base\n"
+                   "Solid then mesh: prints solid layers first, then transitions to mesh")
         bm = QComboBox()
         bm.addItems(["fewer_gaps", "tighter_waves", "solid_then_mesh"])
-        bm.setToolTip("Base reinforcement mode:\n"
-                      "Fewer gaps: reduces wave amplitude to minimize gaps\n"
-                      "Tighter waves: compresses wave spacing in the base\n"
-                      "Solid then mesh: prints solid layers first, then transitions to mesh")
+        bm.setToolTip(_bm_tip)
         bm.currentIndexChanged.connect(self._emit)
         self._widgets["base_mode"] = bm
-        f.addRow("Base mode:", bm)
+        _bm_lbl = QLabel("Base mode:")
+        _bm_lbl.setToolTip(_bm_tip)
+        f.addRow(_bm_lbl, bm)
 
+        _bt_tip = ("How amplitude ramps up from base to full mesh:\n"
+                   "Exponential: slow start, fast finish (smooth)\n"
+                   "Linear: constant rate\n"
+                   "Step: instant jump to full amplitude")
         bt = QComboBox()
         bt.addItems(["exponential", "linear", "step"])
-        bt.setToolTip("How amplitude ramps up from base to full mesh:\n"
-                      "Exponential: slow start, fast finish (smooth)\n"
-                      "Linear: constant rate\n"
-                      "Step: instant jump to full amplitude")
+        bt.setToolTip(_bt_tip)
         bt.currentIndexChanged.connect(self._emit)
         self._widgets["base_transition"] = bt
-        f.addRow("Transition:", bt)
+        _bt_lbl = QLabel("Transition:")
+        _bt_lbl.setToolTip(_bt_tip)
+        f.addRow(_bt_lbl, bt)
 
         parent.addWidget(g)
 
@@ -359,10 +518,16 @@ class SettingsPanel(QScrollArea):
                   tip="Gap between skirt loop and the model. 0 = touching (skirt sits against the model)")
         self._int(f, "skirt_height",   "Skirt layers:",      1,   1,   10,
                   tip="Number of skirt loops stacked vertically")
+        self._int(f, "skirt_loops",    "Skirt loops:",        1,   1,    8,
+                  tip="Number of concentric skirt loops printed side-by-side.\n"
+                      "More loops = better nozzle priming and bed adhesion.\n"
+                      "Each loop is spaced one nozzle-width from the previous.")
 
         parent.addWidget(g)
 
     # ── Widget factories ─────────────────────────────────────────────────────
+
+    _SPIN_W = 90  # uniform width for all numeric input boxes
 
     def _dbl(self, form, key, label, default, lo, hi, step, tip: str = "") -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
@@ -371,22 +536,30 @@ class SettingsPanel(QScrollArea):
         spin.setSingleStep(step)
         spin.setDecimals(len(str(step).split(".")[-1]) if "." in str(step) else 1)
         spin.setValue(default)
+        spin.setFixedWidth(self._SPIN_W)
         if tip:
             spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
-        lbl = form.addRow(label, spin)
+        lbl = QLabel(label)
+        if tip:
+            lbl.setToolTip(tip)
+        form.addRow(lbl, spin)
         return spin
 
     def _int(self, form, key, label, default, lo, hi, tip: str = "") -> QSpinBox:
         spin = QSpinBox()
         spin.setRange(lo, hi)
         spin.setValue(default)
+        spin.setFixedWidth(self._SPIN_W)
         if tip:
             spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
-        form.addRow(label, spin)
+        lbl = QLabel(label)
+        if tip:
+            lbl.setToolTip(tip)
+        form.addRow(lbl, spin)
         return spin
 
     # ── Slots ────────────────────────────────────────────────────────────────
@@ -448,9 +621,11 @@ class SettingsPanel(QScrollArea):
             "wave_smoothness":   w["wave_smoothness"].value(),
             "layer_alternation":     w["layer_alternation"].value(),
             "phase_offset":          w["phase_offset"].value(),
-            "seam_shift":            w["seam_shift"].value(),
-            "seam_position":         w["seam_position"].currentText(),
-            "seam_transition_waves": w["seam_transition_waves"].value(),
+            "seam_shift":               w["seam_shift"].value(),
+            "seam_position":            w["seam_position"].currentText(),
+            "seam_transition_waves":    w["seam_transition_waves"].value(),
+            "wave_skew_enabled":        w["wave_skew_enabled"].isChecked(),
+            "wave_skew":                w["wave_skew"].value(),
             "base_height":           w["base_height"].value(),
             "base_mode":         w["base_mode"].currentText(),
             "base_transition":   w["base_transition"].currentText(),
@@ -475,6 +650,9 @@ class SettingsPanel(QScrollArea):
             "skirt_enabled":          w["skirt_enabled"].isChecked(),
             "skirt_distance":         w["skirt_distance"].value(),
             "skirt_height":           w["skirt_height"].value(),
+            "seam_ramp_enabled":      w["seam_ramp_enabled"].isChecked(),
+            "seam_ramp_pcts":         [w[f"seam_ramp_pct_{n}"].value() for n in range(1, 5)],
+            "skirt_loops":            w["skirt_loops"].value(),
         }
         if is_vase:
             print_s["spiral_points_per_degree"] = w["spiral_points_per_degree"].value()
@@ -537,6 +715,14 @@ class SettingsPanel(QScrollArea):
                 w["skirt_enabled"].setChecked(bool(ps["skirt_enabled"]))
             _set_dbl("skirt_distance", ps.get("skirt_distance"))
             _set_int("skirt_height",   ps.get("skirt_height"))
+            _set_int("skirt_loops",    ps.get("skirt_loops"))
+
+            if ps.get("seam_ramp_enabled") is not None:
+                w["seam_ramp_enabled"].setChecked(bool(ps["seam_ramp_enabled"]))
+            ramp_pcts = ps.get("seam_ramp_pcts", [])
+            for n in range(1, 5):
+                if n - 1 < len(ramp_pcts):
+                    w[f"seam_ramp_pct_{n}"].setValue(int(ramp_pcts[n - 1]))
 
             _set_dbl("wave_amplitude",   ms.get("wave_amplitude"))
             if "wave_count" in ms and ms["wave_count"] is not None:
@@ -552,7 +738,10 @@ class SettingsPanel(QScrollArea):
             _set_dbl("phase_offset",               ms.get("phase_offset"))
             _set_dbl("seam_shift",                 ms.get("seam_shift"))
             _set_combo("seam_position",            ms.get("seam_position"))
-            _set_dbl("seam_transition_waves",      ms.get("seam_transition_waves"))
+            _set_dbl("seam_transition_waves",        ms.get("seam_transition_waves"))
+            if ms.get("wave_skew_enabled") is not None:
+                w["wave_skew_enabled"].setChecked(bool(ms["wave_skew_enabled"]))
+            _set_dbl("wave_skew",                    ms.get("wave_skew"))
             _set_dbl("base_height",                ms.get("base_height"))
             _set_combo("base_mode",        ms.get("base_mode"))
             _set_combo("base_transition",  ms.get("base_transition"))
@@ -561,7 +750,23 @@ class SettingsPanel(QScrollArea):
 
     def load_printer_profile(self, profile: dict) -> None:
         """Called when the active printer profile changes.
-        Bed dims / kinematics / origin live in the profile, not in this panel.
-        Emit settings_changed so the main window can refresh viewers."""
+        Applies hardware overrides from the profile into the slicer panel,
+        then emits settings_changed so the main window can refresh viewers."""
+        w = self._widgets
+        def _set(key, val):
+            if val is None or key not in w:
+                return
+            widget = w[key]
+            try:
+                if hasattr(widget, "setValue"):
+                    widget.setValue(float(val) if hasattr(widget, "setDecimals") else int(val))
+                elif hasattr(widget, "setCurrentText"):
+                    widget.setCurrentText(str(val))
+            except Exception:
+                pass
+
+        _set("nozzle_diameter", profile.get("nozzle_diameter"))
+        _set("nozzle_temp",     profile.get("nozzle_temp"))
+        _set("bed_temp",        profile.get("bed_temp"))
         self.settings_changed.emit()
 

@@ -112,14 +112,15 @@ def _box_edge_verts(x0: float, y0: float, z0: float,
 
 class GCodeLoaderThread(QThread):
     """
-    Parses a .gcode file and emits three arrays:
+    Parses a .gcode file and emits four arrays:
       pts      — (N, 3) float32  all extrusion positions [x, y, z]
       segments — list of (start_idx, count) per continuous extrusion segment
       seam_pts — (M, 3) float32  positions where one full XY revolution
                  completes; these form the vertical seam line visible on
                  the printed part.
+      speeds   — (N,) float32  print speed in mm/s at each extrusion point
     """
-    loaded = pyqtSignal(object, object, object)
+    loaded = pyqtSignal(object, object, object, object)
     error  = pyqtSignal(str)
 
     def __init__(self, path: str, parent=None):
@@ -128,13 +129,13 @@ class GCodeLoaderThread(QThread):
 
     def run(self):
         try:
-            xs, ys, zs = [], [], []
+            xs, ys, zs, spds = [], [], [], []
 
             segments: list[tuple[int, int]] = []
             seg_start  = 0
             had_travel = True
             relative_e = False
-            cur_x = cur_y = cur_z = cur_e = 0.0
+            cur_x = cur_y = cur_z = cur_e = cur_f = 0.0
 
             with open(self.path, "r") as fh:
                 for raw in fh:
@@ -158,7 +159,7 @@ class GCodeLoaderThread(QThread):
                     if len(raw) > 2 and raw[2] not in " \t\r\n;":
                         continue
 
-                    nx, ny, nz, ne = cur_x, cur_y, cur_z, cur_e
+                    nx, ny, nz, ne, nf = cur_x, cur_y, cur_z, cur_e, cur_f
                     has_xy = has_e = False
                     for word in raw.split():
                         if not word: continue
@@ -176,6 +177,9 @@ class GCodeLoaderThread(QThread):
                         elif wc == "E":
                             try: ne = float(word[1:]); has_e = True
                             except ValueError: pass
+                        elif wc == "F":
+                            try: nf = float(word[1:])
+                            except ValueError: pass
 
                     if relative_e:
                         is_extruding = has_e and ne > 0 and has_xy
@@ -188,11 +192,17 @@ class GCodeLoaderThread(QThread):
                                 segments.append((seg_start, len(xs) - seg_start))
                             seg_start  = len(xs)
                             had_travel = False
+                        # Only adopt the new F when it belongs to an extrusion move,
+                        # so travel feedrates don't corrupt the print-speed colour.
+                        if nf > 0:
+                            cur_f = nf
                         xs.append(nx); ys.append(ny); zs.append(nz)
+                        spds.append(cur_f / 60.0)   # mm/min → mm/s
                     elif has_xy:
                         had_travel = True
 
                     cur_x, cur_y, cur_z, cur_e = nx, ny, nz, ne
+                    # cur_f updated only on extrusion (see above)
 
             if xs and len(xs) - seg_start > 0:
                 segments.append((seg_start, len(xs) - seg_start))
@@ -206,6 +216,7 @@ class GCodeLoaderThread(QThread):
                 np.array(ys, dtype=np.float32),
                 np.array(zs, dtype=np.float32),
             ])
+            speeds = np.array(spds, dtype=np.float32)
 
             # ── Seam / revolution detection ───────────────────────────────────
             # Track the position angle of each point relative to the XY centroid.
@@ -297,10 +308,25 @@ class GCodeLoaderThread(QThread):
                         np.array(seam_zs, dtype=np.float32),
                     ])
 
-            self.loaded.emit(pts, segments, seam_pts)
+            self.loaded.emit(pts, segments, seam_pts, speeds)
 
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+# ── Speed colormap (green slow → cyan → blue fast) ────────────────────────────
+
+def _speed_colormap(t: np.ndarray) -> np.ndarray:
+    """Map normalized speed values t ∈ [0,1] to RGB using a green→cyan→blue
+    hue shift.  Output shape (N,3) float32."""
+    stops_t = np.array([0.0,  0.5,  1.0],  dtype=np.float32)
+    stops_r = np.array([0.05, 0.0,  0.1],  dtype=np.float32)
+    stops_g = np.array([0.88, 0.82, 0.28], dtype=np.float32)
+    stops_b = np.array([0.28, 0.92, 1.0],  dtype=np.float32)
+    r = np.interp(t, stops_t, stops_r).astype(np.float32)
+    g = np.interp(t, stops_t, stops_g).astype(np.float32)
+    b = np.interp(t, stops_t, stops_b).astype(np.float32)
+    return np.column_stack([r, g, b])
 
 
 # ── Inner GL widget ───────────────────────────────────────────────────────────
@@ -342,6 +368,14 @@ class _ToolpathGL(QOpenGLWidget):
         self._pending:          Optional[np.ndarray] = None
         self._pending_segments: list = []
         self._pending_seam:     Optional[np.ndarray] = None
+
+        # Cached per-point data for color mode switching (no re-parse needed)
+        self._pts_n:           Optional[np.ndarray] = None   # (N,3) normalized
+        self._height_colours:  Optional[np.ndarray] = None   # (N,3) float32
+        self._speed_colours:   Optional[np.ndarray] = None   # (N,3) float32
+        self._speed_min:       float = 0.0
+        self._speed_max:       float = 0.0
+        self._color_mode:      str   = "speed"   # "speed" | "height"
 
         self._gl_ready: bool = False
         self._prog:     Optional[QOpenGLShaderProgram]     = None
@@ -479,13 +513,19 @@ class _ToolpathGL(QOpenGLWidget):
 
     # ── Background thread slots ───────────────────────────────────────────────
 
-    @pyqtSlot(object, object, object)
-    def _on_loaded(self, pts: np.ndarray, segments: list, seam_pts: np.ndarray):
+    @pyqtSlot(object, object, object, object)
+    def _on_loaded(self, pts: np.ndarray, segments: list,
+                   seam_pts: np.ndarray, speeds: np.ndarray):
         self._loading = False
         n_segs = len(segments)
+        spd_min = float(speeds.min()) if len(speeds) else 0.0
+        spd_max = float(speeds.max()) if len(speeds) else 0.0
+        self._speed_min = spd_min
+        self._speed_max = spd_max
         self._label = (
             f"{len(pts):,} pts  •  {n_segs} seg{'s' if n_segs!=1 else ''}"
             + (f"  •  {len(seam_pts)} seam marks" if len(seam_pts) > 0 else "")
+            + (f"  •  {spd_min:.0f}–{spd_max:.0f} mm/s" if spd_max > 0 else "")
         )
 
         mn = pts.min(0); mx = pts.max(0)
@@ -493,8 +533,8 @@ class _ToolpathGL(QOpenGLWidget):
         scale_v = float(np.abs(pts - center).max())
         if scale_v < 1e-9: scale_v = 1.0
 
-        self._norm_center   = center
-        self._norm_scale_v  = scale_v
+        self._norm_center  = center
+        self._norm_scale_v = scale_v
 
         def _transform(p):
             p = (p - center) / scale_v
@@ -503,28 +543,36 @@ class _ToolpathGL(QOpenGLWidget):
             return p
 
         pts_n = _transform(pts)
+        self._pts_n = pts_n.astype(np.float32)
 
-        # Store actual vZ range (vZ = -pts_n[:,1] in the vertex shader)
-        # so the layer sliders map precisely to the model's height range.
+        # Store actual vZ range
         self._vz_min = float(-pts_n[:, 1].max())
         self._vz_max = float(-pts_n[:, 1].min())
         self._z_lo   = self._vz_min
         self._z_hi   = self._vz_max
 
+        # ── Height colour (blue low → orange high) ───────────────────────────
         z_min = pts[:, 2].min(); z_max = pts[:, 2].max()
-        t = (pts[:, 2] - z_min) / max(z_max - z_min, 1e-9)
-        colours = np.column_stack([
-            0.12 + 0.78 * t,
-            0.39 + 0.31 * t,
-            0.86 - 0.59 * t,
+        t_h = (pts[:, 2] - z_min) / max(z_max - z_min, 1e-9)
+        self._height_colours = np.column_stack([
+            0.12 + 0.78 * t_h,
+            0.39 + 0.31 * t_h,
+            0.86 - 0.59 * t_h,
         ]).astype(np.float32)
 
+        # ── Speed colour (blue slow → red fast) ──────────────────────────────
+        t_s = (speeds - spd_min) / max(spd_max - spd_min, 1e-9)
+        self._speed_colours = _speed_colormap(t_s)
+
+        # Choose colour array based on current mode
+        colours = self._speed_colours if self._color_mode == "speed" else self._height_colours
+
         self._pending = np.column_stack(
-            [pts_n.astype(np.float32), colours]
+            [self._pts_n, colours]
         ).astype(np.float32, copy=False)
         self._pending_segments = segments
 
-        # Seam dots — bright orange, same coordinate space
+        # Seam dots — bright orange
         if len(seam_pts) > 0:
             sp_n = _transform(seam_pts)
             seam_col = np.tile(
@@ -539,6 +587,20 @@ class _ToolpathGL(QOpenGLWidget):
 
         self._queue_box()
         self.reset_view()
+
+    def set_color_mode(self, mode: str) -> None:
+        """Switch between 'speed' and 'height' coloring without re-parsing."""
+        self._color_mode = mode
+        if self._pts_n is None:
+            return
+        colours = self._speed_colours if mode == "speed" else self._height_colours
+        if colours is None:
+            return
+        self._pending = np.column_stack(
+            [self._pts_n, colours]
+        ).astype(np.float32, copy=False)
+        self._pending_segments = self._segments[:]
+        self.update()
 
     @pyqtSlot(str)
     def _on_error(self, msg: str):
@@ -755,7 +817,34 @@ class _ToolpathGL(QOpenGLWidget):
             painter.setPen(QColor(100, 100, 130))
             painter.setFont(QFont("Helvetica", 10))
             painter.drawText(8, self.height() - 8, self._label)
+
+            # Speed legend (top-right corner, only when colour mode is speed)
+            if self._color_mode == "speed" and self._speed_max > 0:
+                self._draw_speed_legend(painter)
         painter.end()
+
+    def _draw_speed_legend(self, painter: QPainter) -> None:
+        """Draw a vertical colour bar with min/max speed labels."""
+        bar_w, bar_h = 12, 80
+        margin = 10
+        x = self.width() - bar_w - margin - 42   # leave room for text
+        y = margin + 16
+
+        # Gradient bar matching the colormap: green (slow) → cyan → blue (fast)
+        grad = QLinearGradient(x, y + bar_h, x, y)   # bottom=slow, top=fast
+        grad.setColorAt(0.00, QColor(13,  224, 71))
+        grad.setColorAt(0.50, QColor(0,   209, 234))
+        grad.setColorAt(1.00, QColor(26,  71,  255))
+        painter.fillRect(x, y, bar_w, bar_h, grad)
+        painter.setPen(QColor(60, 70, 90))
+        painter.drawRect(x, y, bar_w, bar_h)
+
+        # Labels
+        painter.setPen(QColor(190, 200, 220))
+        painter.setFont(QFont("Helvetica", 9))
+        painter.drawText(x + bar_w + 4, y + 10,       f"{self._speed_max:.0f} mm/s")
+        painter.drawText(x + bar_w + 4, y + bar_h,    f"{self._speed_min:.0f} mm/s")
+        painter.drawText(x + bar_w + 4, y + bar_h // 2 + 4, "Speed")
 
     # ── MVP ───────────────────────────────────────────────────────────────────
 
@@ -784,7 +873,7 @@ class _ToolpathGL(QOpenGLWidget):
         dy = e.position().y() - self._last_mouse.y()
         self._last_mouse = e.position()
         if self._mouse_btn == Qt.MouseButton.LeftButton:
-            self.rot_y += dx*0.5; self.rot_x += dy*0.5; self.update()
+            self.rot_y -= dx*0.5; self.rot_x -= dy*0.5; self.update()
         elif self._mouse_btn == Qt.MouseButton.RightButton:
             self.pan_x += dx; self.pan_y += dy; self.update()
 
@@ -884,6 +973,30 @@ class ToolpathViewer(QWidget):
         self._seam_chk.stateChanged.connect(self._on_seam_toggle)
         bl.addWidget(self._seam_chk)
 
+        sep2 = QLabel("|")
+        sep2.setStyleSheet("color: #334;")
+        bl.addWidget(sep2)
+
+        colour_lbl = QLabel("Colour:")
+        colour_lbl.setStyleSheet("color: #779; font-size: 11px;")
+        bl.addWidget(colour_lbl)
+
+        from PyQt6.QtWidgets import QComboBox as _QCB
+        self._colour_combo = _QCB()
+        self._colour_combo.addItems(["Speed", "Height"])
+        self._colour_combo.setFixedHeight(22)
+        self._colour_combo.setFixedWidth(72)
+        self._colour_combo.setStyleSheet(
+            "QComboBox { background:#1a1f2a; color:#aac; font-size:10px; border:1px solid #334; }"
+            "QComboBox::drop-down { border:none; }"
+        )
+        self._colour_combo.setToolTip(
+            "Speed: blue (slow) → cyan → green → yellow → red (fast)\n"
+            "Height: blue (bed) → orange (top)"
+        )
+        self._colour_combo.currentTextChanged.connect(self._on_colour_mode)
+        bl.addWidget(self._colour_combo)
+
         root.addWidget(bar)
 
         self._lo.valueChanged.connect(self._on_range_changed)
@@ -925,6 +1038,9 @@ class ToolpathViewer(QWidget):
     def _on_seam_toggle(self, state):
         self._gl._show_seams = (state == Qt.CheckState.Checked.value)
         self._gl.update()
+
+    def _on_colour_mode(self, text: str):
+        self._gl.set_color_mode("speed" if text == "Speed" else "height")
 
     # ── Public API ────────────────────────────────────────────────────────────
 

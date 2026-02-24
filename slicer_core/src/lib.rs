@@ -518,6 +518,26 @@ fn base_integrity_factor(z: f64, base_height: f64, mode: u8, transition: u8) -> 
     }
 }
 
+/// Piecewise-linear skew warp: moves the wave peak to a different position
+/// within the cycle without changing the wave pattern type.
+///
+/// skew: -1.0 to +1.0 (0 = symmetric, +1 = peak near end of cycle, -1 = peak near start)
+/// Positive skew = slow rise / fast fall (peak later in cycle).
+/// Negative skew = fast rise / slow fall (peak earlier in cycle).
+fn apply_wave_skew(base_phase: f64, skew: f64) -> f64 {
+    if skew.abs() < 1e-4 {
+        return base_phase;
+    }
+    let peak_pos = (0.5 + skew * 0.45).clamp(0.05, 0.95);
+    let t = base_phase.rem_euclid(360.0) / 360.0; // 0..1
+    let mapped = if t < peak_pos {
+        (t / peak_pos) * 0.25
+    } else {
+        0.25 + ((t - peak_pos) / (1.0 - peak_pos)) * 0.75
+    };
+    mapped * 360.0
+}
+
 /// Wave value in [-1, 1].
 /// pattern: 0=sine, 1=triangular, 2=sawtooth
 fn spiral_wave_value(phase_deg: f64, pattern: u8) -> f64 {
@@ -563,6 +583,7 @@ fn spiral_wave_value(phase_deg: f64, pattern: u8) -> f64 {
 /// target_samples_pw  : Min samples per wave cycle (anti-alias guard)
 /// wave_asymmetry     : Enable asymmetric wave shaping
 /// wave_asym_intensity: Asymmetry intensity 0-100
+/// wave_skew          : Wave shape skew -1.0..+1.0 (0=symmetric, +1=peak near end, -1=peak near start)
 ///
 /// Returns (xs, ys, zs, angles, revolutions) — flat f64 arrays.
 #[pyfunction]
@@ -589,6 +610,7 @@ fn generate_spiral_with_waves(
     target_samples_per_wave: i32,
     wave_asymmetry: bool,
     wave_asym_intensity: f64,
+    wave_skew: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let num_layers = layer_zs.len();
     if num_layers == 0 {
@@ -803,7 +825,11 @@ fn generate_spiral_with_waves(
             // We blend wave VALUES (not phase constants) so the mesh pattern
             // fades to zero amplitude then rebuilds in the opposite phase —
             // a true crossfade rather than a phase slide.
-            let base_phase = (wi.angle * waves_per_rev).rem_euclid(360.0);
+            //
+            // wave_skew warps the cycle so the peak occurs earlier or later,
+            // compensating for printer-dynamics distortion (running-wave artifact).
+            let raw_phase = (wi.angle * waves_per_rev).rem_euclid(360.0);
+            let base_phase = apply_wave_skew(raw_phase, wave_skew);
             let wave_raw = if cycle_len_revs > 0.0 {
                 let adjusted_rev = wi.revolution + seam_revolution_offset;
                 let cycle = (adjusted_rev / cycle_len_revs) as i64;
