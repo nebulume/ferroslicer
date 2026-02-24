@@ -10,7 +10,7 @@ Built for Klipper printers. Powered by a Rust extension for sub-second slice tim
 
 ## What it does
 
-Instead of printing flat, uniform layers, Vermicular displaces each layer's extrusion path outward and inward in a sinusoidal wave. Wave amplitude, frequency, phase alternation, and pattern shape are all tunable. The effect:
+Instead of printing flat, uniform layers, FerroSlicer displaces each layer's extrusion path outward and inward in a sinusoidal wave. Wave amplitude, frequency, phase alternation, and pattern shape are all tunable. The effect:
 
 - **Mesh lamps** — light passes through the wave-gaps between layers
 - **Textured vases** — surface appears woven or latticed
@@ -99,8 +99,8 @@ Download the latest `.dmg` from [Releases](https://github.com/nebulume/ferroslic
 Download the `.AppImage` from [Releases](https://github.com/nebulume/ferroslicer/releases):
 
 ```bash
-chmod +x Vermicular-x86_64.AppImage
-./Vermicular-x86_64.AppImage
+chmod +x FerroSlicer-x86_64.AppImage
+./FerroSlicer-x86_64.AppImage
 ```
 
 ---
@@ -152,7 +152,7 @@ The Python slicer falls back to pure-Python spiral generation if the Rust extens
 
 ## Klipper / Moonraker setup
 
-In App Settings → Moonraker, enter your printer's IP and port (default port 80 if using an nginx proxy, or 7125 for direct Moonraker access). Vermicular uses the standard Moonraker REST API:
+In App Settings → Moonraker, enter your printer's IP and port (default port 80 if using an nginx proxy, or 7125 for direct Moonraker access). FerroSlicer uses the standard Moonraker REST API:
 
 - `POST /server/files/upload` — uploads the GCode file
 - `POST /printer/print/start` — starts the print job
@@ -163,7 +163,7 @@ In App Settings → Moonraker, enter your printer's IP and port (default port 80
 ## Project structure
 
 ```
-vermicular/
+ferroslicer/
 ├── project/core/          # Slicer pipeline (Python)
 │   ├── stl_parser.py      # ASCII + binary STL reader
 │   ├── geometry_analyzer.py  # Layer extraction, perimeter analysis
@@ -207,7 +207,7 @@ Pure-Python spiral generation for the same model: ~4 minutes.
 
 ## CLI usage
 
-Vermicular also has a command-line interface for headless/scripted use:
+FerroSlicer also has a command-line interface for headless/scripted use:
 
 ```bash
 python -m project path/to/model.stl \
@@ -228,15 +228,15 @@ Run `python -m project --help` for full option list.
 
 ```bash
 pip install pyinstaller
-pyinstaller packaging/vermicular.spec
-# Output: dist/Vermicular.app
+pyinstaller packaging/ferroslicer.spec
+# Output: dist/FerroSlicer.app
 ```
 
 ### Linux `.AppImage`
 
 ```bash
 pip install pyinstaller
-pyinstaller packaging/vermicular.spec
+pyinstaller packaging/ferroslicer.spec
 # Then use linuxdeploy + AppImage tools (see packaging/build_appimage.sh)
 ```
 
