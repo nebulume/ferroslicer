@@ -561,7 +561,23 @@ class SettingsPanel(QScrollArea):
 
     def load_printer_profile(self, profile: dict) -> None:
         """Called when the active printer profile changes.
-        Bed dims / kinematics / origin live in the profile, not in this panel.
-        Emit settings_changed so the main window can refresh viewers."""
+        Applies hardware overrides from the profile into the slicer panel,
+        then emits settings_changed so the main window can refresh viewers."""
+        w = self._widgets
+        def _set(key, val):
+            if val is None or key not in w:
+                return
+            widget = w[key]
+            try:
+                if hasattr(widget, "setValue"):
+                    widget.setValue(float(val) if hasattr(widget, "setDecimals") else int(val))
+                elif hasattr(widget, "setCurrentText"):
+                    widget.setCurrentText(str(val))
+            except Exception:
+                pass
+
+        _set("nozzle_diameter", profile.get("nozzle_diameter"))
+        _set("nozzle_temp",     profile.get("nozzle_temp"))
+        _set("bed_temp",        profile.get("bed_temp"))
         self.settings_changed.emit()
 

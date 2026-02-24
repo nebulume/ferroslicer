@@ -178,6 +178,8 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._update_controls()
         self._klipper_timer.start()
+        # Show setup wizard on first launch (deferred so the main window is visible first)
+        QTimer.singleShot(200, self._maybe_run_setup)
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -226,9 +228,8 @@ class MainWindow(QMainWindow):
         self.file_browser.file_hovered.connect(self._on_file_hovered)
         self.file_browser.file_opened.connect(self._load_stl)
         self.preview_tabs.addTab(self.file_browser, "  Files  ")
-        # Restore last directory so the user lands where they left off
-        last_dir = self._resolve_start_dir(self._app_settings.get("last_stl_dir", ""))
-        self.file_browser.navigate_to(last_dir)
+        # Navigate to the configured STL directory (prompt on first launch if not set)
+        QTimer.singleShot(0, self._init_stl_dir)
 
         # Tab 1: Model — STL viewer
         self.stl_viewer = STLViewer()
@@ -397,6 +398,22 @@ class MainWindow(QMainWindow):
 
     # ── File loading ──────────────────────────────────────────────────────────
 
+    def _maybe_run_setup(self):
+        """Show the first-run setup wizard if setup hasn't been completed yet."""
+        from gui.dialogs.setup_wizard import run_if_needed
+        if run_if_needed(self):
+            # Reload settings after the wizard saved them
+            self._app_settings = load_app_settings()
+            profile = get_active_profile(self._app_settings)
+            self.settings_panel.load_printer_profile(profile)
+        # Navigate the file browser regardless (wizard may have set stl_dir)
+        self._init_stl_dir()
+
+    def _init_stl_dir(self):
+        """Navigate the file browser to the configured STL directory."""
+        stl_dir = self._app_settings.get("stl_dir", "")
+        self.file_browser.navigate_to(self._resolve_start_dir(stl_dir or str(Path.home())))
+
     @staticmethod
     def _resolve_start_dir(preferred: str) -> str:
         """Return the first ancestor of *preferred* that actually exists on disk.
@@ -413,13 +430,13 @@ class MainWindow(QMainWindow):
         return str(Path.home())
 
     def _pick_stl(self):
-        start = self._resolve_start_dir(self._app_settings.get("last_stl_dir", ""))
+        start = self._resolve_start_dir(
+            self._app_settings.get("stl_dir", "") or str(Path.home())
+        )
         path, _ = QFileDialog.getOpenFileName(
             self, "Open STL file", start, "STL Files (*.stl);;All (*)"
         )
         if path:
-            self._app_settings["last_stl_dir"] = str(Path(path).parent)
-            save_app_settings(self._app_settings)
             self._load_stl(path)
 
     def _load_stl(self, path: str):
@@ -633,6 +650,10 @@ class MainWindow(QMainWindow):
             # Apply active printer profile's hardware settings to the slicer panel
             profile = get_active_profile(self._app_settings)
             self.settings_panel.load_printer_profile(profile)
+            # Re-navigate file browser if STL directory changed
+            stl_dir = self._app_settings.get("stl_dir", "")
+            if stl_dir:
+                self.file_browser.navigate_to(self._resolve_start_dir(stl_dir))
 
     def _open_library(self):
         dlg = GCodeLibraryDialog(self)

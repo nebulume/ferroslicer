@@ -116,8 +116,11 @@ def load_app_settings() -> dict:
 
 
 def _default_settings() -> dict:
+    import sys as _sys
+    frozen = getattr(_sys, "frozen", False)
     return {
-        "output_dir": str(Path.home() / "Documents" / "FerroSlicer" / "output") if getattr(__import__("sys"), "frozen", False) else str(Path(__file__).parent.parent.parent / "output"),
+        "output_dir": str(Path.home() / "Documents" / "FerroSlicer" / "output") if frozen else str(Path(__file__).parent.parent.parent / "output"),
+        "stl_dir": "",          # empty = not set; prompts on first launch
         "active_profile": "Default",
         "printer_profiles": {"Default": dict(_BUILTIN_PROFILE)},
     }
@@ -303,13 +306,31 @@ class AppSettingsDialog(QDialog):
     def _build_output_tab(self) -> QWidget:
         tab = QWidget()
         f = QFormLayout(tab)
+        f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        # STL files directory
+        self._stl_dir_edit = QLineEdit()
+        self._stl_dir_edit.setPlaceholderText("e.g. ~/Documents/STL Models")
+        stl_browse = QPushButton("Browse…")
+        stl_browse.clicked.connect(self._browse_stl_dir)
+        stl_row = QHBoxLayout()
+        stl_row.addWidget(self._stl_dir_edit)
+        stl_row.addWidget(stl_browse)
+        f.addRow("STL files directory:", stl_row)
+        stl_note = QLabel("File browser opens here on every launch.")
+        stl_note.setStyleSheet("color: #778; font-size: 11px;")
+        f.addRow("", stl_note)
+
+        # GCode output directory
         self._output_dir_edit = QLineEdit()
         browse_btn = QPushButton("Browse…")
         browse_btn.clicked.connect(self._browse_output)
-        row = QHBoxLayout()
-        row.addWidget(self._output_dir_edit)
-        row.addWidget(browse_btn)
-        f.addRow("Output directory:", row)
+        out_row = QHBoxLayout()
+        out_row.addWidget(self._output_dir_edit)
+        out_row.addWidget(browse_btn)
+        f.addRow("GCode output directory:", out_row)
+
         return tab
 
     # ── Widget factories ──────────────────────────────────────────────────────
@@ -386,6 +407,7 @@ class AppSettingsDialog(QDialog):
         # Update placeholder text for the active firmware
         self._update_gcode_placeholders(p.get("firmware", "klipper"))
 
+        self._stl_dir_edit.setText(self._settings.get("stl_dir", ""))
         self._output_dir_edit.setText(self._settings.get("output_dir", ""))
 
     def _fields_to_profile(self) -> dict:
@@ -502,8 +524,15 @@ class AppSettingsDialog(QDialog):
         if path:
             target.setPlainText(Path(path).read_text(errors="ignore"))
 
+    def _browse_stl_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Select STL files directory",
+                                              self._stl_dir_edit.text() or str(Path.home()))
+        if d:
+            self._stl_dir_edit.setText(d)
+
     def _browse_output(self):
-        d = QFileDialog.getExistingDirectory(self, "Select output directory")
+        d = QFileDialog.getExistingDirectory(self, "Select GCode output directory",
+                                              self._output_dir_edit.text() or str(Path.home()))
         if d:
             self._output_dir_edit.setText(d)
 
@@ -516,6 +545,7 @@ class AppSettingsDialog(QDialog):
             self._settings.setdefault("printer_profiles", {})[name] = self._fields_to_profile()
             self._settings["active_profile"] = name
 
+        self._settings["stl_dir"]    = self._stl_dir_edit.text().strip()
         self._settings["output_dir"] = self._output_dir_edit.text().strip()
         save_app_settings(self._settings)
         self.accept()
