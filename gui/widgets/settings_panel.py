@@ -93,9 +93,10 @@ class SettingsPanel(QScrollArea):
         header.setFixedHeight(56)
         header.setStyleSheet(
             "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            " stop:0 #0d1a28, stop:1 #0a1520);"
-            "border-bottom: 1px solid #1e3a50;"
+            " stop:0 #1a3a5c, stop:1 #122840);"
+            "border-bottom: 1px solid #3a6a9a;"
         )
+        header.setAutoFillBackground(True)
         h = QHBoxLayout(header)
         h.setContentsMargins(8, 4, 8, 4)
         h.setSpacing(8)
@@ -122,14 +123,14 @@ class SettingsPanel(QScrollArea):
 
         name_lbl = QLabel("FerroSlicer")
         name_lbl.setStyleSheet(
-            "color: #7ed4f7; font-size: 15px; font-weight: 700;"
+            "color: #a8e8ff; font-size: 15px; font-weight: 700;"
             "letter-spacing: 1px; background: transparent;"
         )
         text_layout.addWidget(name_lbl)
 
         sub_lbl = QLabel("mesh vase slicer")
         sub_lbl.setStyleSheet(
-            "color: #3a7a9f; font-size: 10px; background: transparent;"
+            "color: #6aaccc; font-size: 10px; background: transparent;"
         )
         text_layout.addWidget(sub_lbl)
 
