@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import db.print_db as pdb
 
 

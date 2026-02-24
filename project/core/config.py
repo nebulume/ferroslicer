@@ -4,8 +4,17 @@ Configuration management for MeshVase Slicer.
 
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Dict, Any, Optional
 from .logger import setup_logger
+
+
+def _default_config_path() -> str:
+    """Locate config.json: bundled _MEIPASS dir when frozen, repo root otherwise."""
+    if getattr(sys, "frozen", False):
+        return str(Path(sys._MEIPASS) / "config.json")
+    return str(Path(__file__).parent.parent.parent / "config.json")
 
 logger = setup_logger("config")
 
@@ -16,8 +25,8 @@ class Config:
     Loads from config.json with support for nested dictionaries.
     """
 
-    def __init__(self, config_path: str = "config.json"):
-        self.config_path = config_path
+    def __init__(self, config_path: str = ""):
+        self.config_path = config_path or _default_config_path()
         self._config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:

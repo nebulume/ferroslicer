@@ -10,9 +10,6 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-
 class SlicerWorker(QThread):
     """
     Runs the slicer pipeline in a background thread with per-stage progress.

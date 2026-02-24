@@ -4,6 +4,7 @@ Mirrors every CLI flag from __main__.py.
 """
 
 import json
+import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -13,8 +14,17 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale
 
-SLICER_SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "slicer_settings.json"
-PRESETS_PATH         = Path(__file__).parent.parent.parent / "data" / "presets.json"
+def _user_data_dir() -> Path:
+    """Writable directory for user settings — redirects to ~/Documents/FerroSlicer/ when frozen."""
+    if getattr(sys, "frozen", False):
+        p = Path.home() / "Documents" / "FerroSlicer"
+    else:
+        p = Path(__file__).parent.parent.parent / "data"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+SLICER_SETTINGS_PATH = _user_data_dir() / "slicer_settings.json"
+PRESETS_PATH         = _user_data_dir() / "presets.json"
 
 
 class SettingsPanel(QScrollArea):

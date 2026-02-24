@@ -117,7 +117,7 @@ def load_app_settings() -> dict:
 
 def _default_settings() -> dict:
     return {
-        "output_dir": str(Path(__file__).parent.parent.parent / "output"),
+        "output_dir": str(Path.home() / "Documents" / "FerroSlicer" / "output") if getattr(__import__("sys"), "frozen", False) else str(Path(__file__).parent.parent.parent / "output"),
         "active_profile": "Default",
         "printer_profiles": {"Default": dict(_BUILTIN_PROFILE)},
     }
@@ -483,7 +483,6 @@ class AppSettingsDialog(QDialog):
     def _test_connection(self):
         ip = self._ip_edit.text().strip() or "192.168.1.65"
         port = self._port_spin.value()
-        import sys; sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         try:
             from klipper.moonraker import MoonrakerClient
             client = MoonrakerClient(ip, port)
