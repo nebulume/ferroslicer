@@ -328,6 +328,12 @@ class _STLViewerGL(QOpenGLWidget):
         self.pan_y = 0.0
         self.update()
 
+    def set_view(self, rot_x: float, rot_y: float) -> None:
+        self.rot_x = rot_x
+        self.rot_y = rot_y
+        self.pan_x = self.pan_y = 0.0
+        self.update()
+
     # ── Background thread slots ───────────────────────────────────────────────
 
     @pyqtSlot(object, object)
@@ -811,6 +817,28 @@ class STLViewer(QWidget):
         reset_btn.clicked.connect(self._reset_scale)
         bl.addWidget(reset_btn)
 
+        sep_v = QLabel("|")
+        sep_v.setStyleSheet("color: #334; padding: 0 2px;")
+        bl.addWidget(sep_v)
+
+        _btn_style = (
+            "QPushButton{font-size:10px;padding:0 3px;color:#99b;"
+            "background:transparent;border:none;}"
+            "QPushButton:hover{color:#ccf;}"
+        )
+        for label, tip, rx, ry in [
+            ("Iso",   "Isometric view",  25.0, 35.0),
+            ("Front", "Front view",       0.0,  0.0),
+            ("Top",   "Top view",        90.0,  0.0),
+            ("Side",  "Side view",        0.0, 90.0),
+        ]:
+            vbtn = QPushButton(label)
+            vbtn.setFixedHeight(20)
+            vbtn.setStyleSheet(_btn_style)
+            vbtn.setToolTip(tip)
+            vbtn.clicked.connect(lambda checked=False, x=rx, y=ry: self.set_view(x, y))
+            bl.addWidget(vbtn)
+
         bl.addStretch()
 
         self._transparent_check = QCheckBox("Transparent")
@@ -893,3 +921,6 @@ class STLViewer(QWidget):
 
     def reset_view(self) -> None:
         self._gl.reset_view()
+
+    def set_view(self, rot_x: float, rot_y: float) -> None:
+        self._gl.set_view(rot_x, rot_y)

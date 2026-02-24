@@ -450,6 +450,12 @@ class _ToolpathGL(QOpenGLWidget):
         self.pan_x = self.pan_y = 0.0
         self.update()
 
+    def set_view(self, rot_x: float, rot_y: float) -> None:
+        self.rot_x = rot_x
+        self.rot_y = rot_y
+        self.pan_x = self.pan_y = 0.0
+        self.update()
+
     def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
         self._bed_dims = (bed_x, bed_y, max_z)
         self._queue_box()
@@ -997,6 +1003,28 @@ class ToolpathViewer(QWidget):
         self._colour_combo.currentTextChanged.connect(self._on_colour_mode)
         bl.addWidget(self._colour_combo)
 
+        sep3 = QLabel("|")
+        sep3.setStyleSheet("color: #334;")
+        bl.addWidget(sep3)
+
+        _btn_style = (
+            "QPushButton{font-size:10px;padding:0 3px;color:#99b;"
+            "background:transparent;border:none;}"
+            "QPushButton:hover{color:#ccf;}"
+        )
+        for label, tip, rx, ry in [
+            ("Iso",   "Isometric view",  25.0, 35.0),
+            ("Front", "Front view",       0.0,  0.0),
+            ("Top",   "Top view",        90.0,  0.0),
+            ("Side",  "Side view",        0.0, 90.0),
+        ]:
+            vbtn = QPushButton(label)
+            vbtn.setFixedHeight(22)
+            vbtn.setStyleSheet(_btn_style)
+            vbtn.setToolTip(tip)
+            vbtn.clicked.connect(lambda checked=False, x=rx, y=ry: self.set_view(x, y))
+            bl.addWidget(vbtn)
+
         root.addWidget(bar)
 
         self._lo.valueChanged.connect(self._on_range_changed)
@@ -1054,3 +1082,6 @@ class ToolpathViewer(QWidget):
 
     def set_print_volume(self, bed_x: float, bed_y: float, max_z: float) -> None:
         self._gl.set_print_volume(bed_x, bed_y, max_z)
+
+    def set_view(self, rot_x: float, rot_y: float) -> None:
+        self._gl.set_view(rot_x, rot_y)
