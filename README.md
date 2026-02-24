@@ -24,7 +24,7 @@ Instead of printing flat, uniform layers, FerroSlicer displaces each layer's ext
 
 | STL Preview | GCode Viewer | Settings | Gcode Explorer |
 |---|---|---|---|
-| <img width="1478" height="935" alt="Screenshot 2026-02-25 at 00 14 39" src="https://github.com/user-attachments/assets/adbbc8bc-a474-4c1e-b076-8c2099c8353b" /> | <img width="1480" height="938" alt="Screenshot 2026-02-25 at 00 13 53" src="https://github.com/user-attachments/assets/60a4c5c1-a0df-4233-81cb-6c03af218452" /> | <img width="677" height="955" alt="Screenshot 2026-02-25 at 00 15 26" src="https://github.com/user-attachments/assets/533c1669-d650-41c0-b936-f3d90c89a8f0" /> | <img width="1401" height="816" alt="Screenshot 2026-02-25 at 00 26 12" src="https://github.com/user-attachments/assets/659eaf45-4b10-422e-91cd-243ae06f0c1d" /> |
+| <img width="1477" height="958" alt="Screenshot 2026-02-25 at 00 28 31" src="https://github.com/user-attachments/assets/8bb644f5-c818-467b-9e1a-fa6351e1aaa7" /> | <img width="1480" height="938" alt="Screenshot 2026-02-25 at 00 13 53" src="https://github.com/user-attachments/assets/60a4c5c1-a0df-4233-81cb-6c03af218452" /> | <img width="677" height="955" alt="Screenshot 2026-02-25 at 00 15 26" src="https://github.com/user-attachments/assets/533c1669-d650-41c0-b936-f3d90c89a8f0" /> | <img width="1401" height="816" alt="Screenshot 2026-02-25 at 00 26 12" src="https://github.com/user-attachments/assets/659eaf45-4b10-422e-91cd-243ae06f0c1d" /> |
 
 ---
 
