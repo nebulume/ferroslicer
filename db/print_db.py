@@ -4,13 +4,21 @@ SQLite-backed store for all slicing jobs, send history, and print status.
 """
 
 import sqlite3
+import sys
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 
-DB_PATH = Path(__file__).parent.parent / "data" / "prints.db"
+def _db_path() -> Path:
+    if getattr(sys, "frozen", False):
+        base = Path.home() / "Documents" / "FerroSlicer"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "prints.db"
+    return Path(__file__).parent.parent / "data" / "prints.db"
+
+DB_PATH = _db_path()
 
 
 def _get_conn() -> sqlite3.Connection:

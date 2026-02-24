@@ -17,7 +17,20 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QLocale
 from PyQt6.QtGui import QFont
 
-SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "app_settings.json"
+def _settings_path() -> Path:
+    """Return a writable path for app_settings.json.
+
+    Inside a frozen .app the bundle tree is read-only, so we store user data
+    in ~/Documents/FerroSlicer/ instead.
+    """
+    import sys
+    if getattr(sys, "frozen", False):
+        base = Path.home() / "Documents" / "FerroSlicer"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "app_settings.json"
+    return Path(__file__).parent.parent.parent / "data" / "app_settings.json"
+
+SETTINGS_PATH = _settings_path()
 
 # ── Firmware-specific default GCode ──────────────────────────────────────────
 
