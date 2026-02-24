@@ -14,11 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 import db.print_db as pdb
-from gui.widgets.toolpath_viewer import ToolpathViewer
 
 
 STATUS_COLORS = {
@@ -43,7 +39,7 @@ class GCodeLibraryDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("GCode Library")
-        self.resize(1400, 780)
+        self.resize(860, 680)
         self._jobs: list[dict] = []
         self._build_ui()
         self._load_jobs()
@@ -142,21 +138,7 @@ class GCodeLibraryDialog(QDialog):
         mid_l.addLayout(btn_row)
         splitter.addWidget(mid_w)
 
-        # ── Right: toolpath preview ────────────────────────────────────────
-        right_w = QWidget()
-        right_l = QVBoxLayout(right_w)
-        right_l.setContentsMargins(4, 0, 0, 0)
-        right_l.setSpacing(4)
-
-        lbl3 = QLabel("Toolpath preview")
-        lbl3.setStyleSheet("color: #889; font-size: 11px; font-weight: bold;")
-        right_l.addWidget(lbl3)
-
-        self.tp_viewer = ToolpathViewer()
-        right_l.addWidget(self.tp_viewer)
-
-        splitter.addWidget(right_w)
-        splitter.setSizes([280, 340, 780])
+        splitter.setSizes([280, 600])
 
         # ── Close button ──────────────────────────────────────────────────
         close_btn = QPushButton("Close")
@@ -189,7 +171,6 @@ class GCodeLibraryDialog(QDialog):
         if no_job:
             self.detail.clear()
             self.reveal_btn.setEnabled(False)
-            self.tp_viewer.clear()
             return
 
         job   = self._jobs[row]
@@ -223,11 +204,6 @@ class GCodeLibraryDialog(QDialog):
                 lines.append(settings_json)
         self.detail.setPlainText("\n".join(lines))
 
-        # Toolpath preview
-        if gcode_exists:
-            self.tp_viewer.load_gcode(gcode)
-        else:
-            self.tp_viewer.clear()
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -270,7 +246,6 @@ class GCodeLibraryDialog(QDialog):
             pdb.delete_job(job["id"])
             self._load_jobs()
             self.detail.clear()
-            self.tp_viewer.clear()
             self.load_settings_btn.setEnabled(False)
             self.reveal_btn.setEnabled(False)
             self.delete_btn.setEnabled(False)
