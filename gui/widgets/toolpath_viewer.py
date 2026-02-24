@@ -309,15 +309,15 @@ class GCodeLoaderThread(QThread):
             self.error.emit(str(exc))
 
 
-# ── Speed colormap (blue → cyan → green → yellow → red) ─────────────────────
+# ── Speed colormap (green slow → cyan → blue fast) ────────────────────────────
 
 def _speed_colormap(t: np.ndarray) -> np.ndarray:
-    """Map normalized speed values t ∈ [0,1] to RGB colors using a
-    blue→cyan→green→yellow→red gradient. Output shape (N,3) float32."""
-    stops_t = np.array([0.0,  0.25, 0.5,  0.75, 1.0],  dtype=np.float32)
-    stops_r = np.array([0.08, 0.0,  0.05, 1.0,  1.0],  dtype=np.float32)
-    stops_g = np.array([0.18, 0.75, 0.92, 0.90, 0.08], dtype=np.float32)
-    stops_b = np.array([0.95, 0.95, 0.08, 0.0,  0.0],  dtype=np.float32)
+    """Map normalized speed values t ∈ [0,1] to RGB using a green→cyan→blue
+    hue shift.  Output shape (N,3) float32."""
+    stops_t = np.array([0.0,  0.5,  1.0],  dtype=np.float32)
+    stops_r = np.array([0.05, 0.0,  0.1],  dtype=np.float32)
+    stops_g = np.array([0.88, 0.82, 0.28], dtype=np.float32)
+    stops_b = np.array([0.28, 0.92, 1.0],  dtype=np.float32)
     r = np.interp(t, stops_t, stops_r).astype(np.float32)
     g = np.interp(t, stops_t, stops_g).astype(np.float32)
     b = np.interp(t, stops_t, stops_b).astype(np.float32)
@@ -825,14 +825,11 @@ class _ToolpathGL(QOpenGLWidget):
         x = self.width() - bar_w - margin - 42   # leave room for text
         y = margin + 16
 
-        # Gradient bar matching the colormap
+        # Gradient bar matching the colormap: green (slow) → cyan → blue (fast)
         grad = QLinearGradient(x, y + bar_h, x, y)   # bottom=slow, top=fast
-        # stops: blue(0)→cyan(0.25)→green(0.5)→yellow(0.75)→red(1)
-        grad.setColorAt(0.00, QColor(20,  46,  242))
-        grad.setColorAt(0.25, QColor(0,   191, 242))
-        grad.setColorAt(0.50, QColor(12,  234, 20))
-        grad.setColorAt(0.75, QColor(255, 230, 0))
-        grad.setColorAt(1.00, QColor(255, 20,  0))
+        grad.setColorAt(0.00, QColor(13,  224, 71))
+        grad.setColorAt(0.50, QColor(0,   209, 234))
+        grad.setColorAt(1.00, QColor(26,  71,  255))
         painter.fillRect(x, y, bar_w, bar_h, grad)
         painter.setPen(QColor(60, 70, 90))
         painter.drawRect(x, y, bar_w, bar_h)
