@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QTextEdit, QSplitter, QMessageBox, QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
 import db.print_db as pdb
@@ -276,6 +276,7 @@ class GCodeLibraryDialog(QDialog):
         no_job = (row < 0 or row >= len(self._jobs))
         self.load_settings_btn.setEnabled(not no_job)
         self.delete_btn.setEnabled(not no_job)
+        self._reset_load_btn()
 
         if no_job:
             self.detail.clear()
@@ -296,6 +297,14 @@ class GCodeLibraryDialog(QDialog):
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
+    def _reset_load_btn(self):
+        self.load_settings_btn.setText("Load Settings")
+        self.load_settings_btn.setStyleSheet(
+            "QPushButton { background: #2a5298; color: white; border-radius: 3px; font-weight: bold; }"
+            "QPushButton:hover { background: #3a62a8; }"
+            "QPushButton:disabled { background: #333; color: #666; }"
+        )
+
     def _load_settings(self):
         """Emit the selected job's settings so main window can apply them."""
         row = self.job_list.currentRow()
@@ -307,6 +316,11 @@ class GCodeLibraryDialog(QDialog):
         try:
             cfg = json.loads(settings_json)
             self.settings_loaded.emit(cfg)
+            self.load_settings_btn.setText("✓  Loaded")
+            self.load_settings_btn.setStyleSheet(
+                "QPushButton { background: #1e6b3a; color: #7effa0; border-radius: 3px; font-weight: bold; }"
+                "QPushButton:hover { background: #28854a; }"
+            )
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not parse settings:\n{e}")
 
