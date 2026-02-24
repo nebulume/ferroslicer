@@ -173,9 +173,9 @@ class SlicerWorker(QThread):
                 seam_shift = ms.get("seam_shift", 0.0)
                 seam_pos = ms.get("seam_position", "auto")
                 seam_transition_waves = ms.get("seam_transition_waves", 0.0)
-                wave_phase_offset_deg = (
-                    float(ms.get("wave_phase_offset", 0.0))
-                    if ms.get("wave_phase_offset_enabled", False)
+                wave_skew = (
+                    float(ms.get("wave_skew", 0.0)) / 100.0
+                    if ms.get("wave_skew_enabled", False)
                     else 0.0
                 )
 
@@ -219,7 +219,7 @@ class SlicerWorker(QThread):
                         base_integrity_manager=base_mgr,
                         wave_asymmetry=wave_asymmetry,
                         wave_asymmetry_intensity=wave_asym_int,
-                        wave_phase_offset_deg=wave_phase_offset_deg,
+                        wave_skew=wave_skew,
                     )
                     # Store seam params on spiral so GCodeGenerator can use them
                     modified_spiral._seam_revolution_offset = seam_revolution_offset

@@ -42,6 +42,8 @@
         "seam_shift": 0.0,
         "seam_position": "auto",
         "seam_transition_waves": 0,
+        "wave_skew_enabled": false,
+        "wave_skew": 0.0,
         "start_phase": "random",
         "base_height": 28.0,
         "base_mode": "fewer_gaps",

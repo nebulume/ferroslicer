@@ -143,7 +143,7 @@ class SpiralGenerator:
         base_integrity_manager=None,
         wave_asymmetry: bool = False,
         wave_asymmetry_intensity: float = 100,
-        wave_phase_offset_deg: float = 0.0,
+        wave_skew: float = 0.0,
     ) -> 'RustSpiralPoints':
         """
         Generate spiral + wave in one Rust call.
@@ -192,7 +192,7 @@ class SpiralGenerator:
             int(self.target_samples_per_wave),
             bool(wave_asymmetry),
             float(wave_asymmetry_intensity),
-            float(wave_phase_offset_deg),
+            float(wave_skew),
         )
         total = len(xs)
         logger.info(f"Rust spiral complete: {total} points (revolutions={total / max(1, int(360 * self.points_per_degree)):.1f})")

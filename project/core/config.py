@@ -90,8 +90,8 @@ class Config:
                 "layer_alternation": 2,
                 "phase_offset": 50,
                 "seam_shift": 0.0,
-                "wave_phase_offset_enabled": False,
-                "wave_phase_offset": 0.0,
+                "wave_skew_enabled": False,
+                "wave_skew": 0.0,
                 "start_phase": "random",  # Options: random, aligned
                 "base_height": 28.0,
                 "base_mode": "fewer_gaps",  # Options: tighter_waves, fewer_gaps, solid_then_mesh

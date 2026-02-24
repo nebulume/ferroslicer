@@ -280,14 +280,17 @@ class SettingsPanel(QScrollArea):
         g = QGroupBox("Printing Mode")
         f = QFormLayout(g)
 
+        _mode_tip = ("Spiral Vase: single-wall continuous spiral, no seam, ideal for vases.\n"
+                     "Layer Mesh: traditional layer-by-layer with wave pattern on each layer")
         cb = QComboBox()
         cb.addItems(["Spiral Vase (continuous)", "Layer Mesh"])
-        cb.setToolTip("Spiral Vase: single-wall continuous spiral, no seam, ideal for vases.\n"
-                      "Layer Mesh: traditional layer-by-layer with wave pattern on each layer")
+        cb.setToolTip(_mode_tip)
         cb.currentIndexChanged.connect(self._on_mode_change)
         self._widgets["vase_mode"] = cb
         cb.currentIndexChanged.connect(self._emit)
-        f.addRow("Mode:", cb)
+        _mode_lbl = QLabel("Mode:")
+        _mode_lbl.setToolTip(_mode_tip)
+        f.addRow(_mode_lbl, cb)
 
         dbl = self._dbl(f, "spiral_points_per_degree", "Spiral res (pts/°):", 1.2, 0.1, 5.0, 0.1,
                         tip="Sampling resolution of the spiral path. 1.2 pts/° = ~432 points/revolution.\n"
@@ -304,15 +307,18 @@ class SettingsPanel(QScrollArea):
                   tip="Peak-to-trough height of the surface waves in mm. 0 = smooth cylinder")
 
         # Wave frequency: count OR spacing
+        _freq_tip = ("How to set wave frequency:\n"
+                     "Per revolution: fixed number of waves around the circumference\n"
+                     "Per distance: spacing between wave peaks in mm (adapts to model size)")
         freq_cb = QComboBox()
         freq_cb.addItems(["Per revolution (count)", "Per distance (spacing mm)"])
-        freq_cb.setToolTip("How to set wave frequency:\n"
-                           "Per revolution: fixed number of waves around the circumference\n"
-                           "Per distance: spacing between wave peaks in mm (adapts to model size)")
+        freq_cb.setToolTip(_freq_tip)
         freq_cb.currentIndexChanged.connect(self._on_freq_mode_change)
         self._widgets["wave_freq_mode"] = freq_cb
         freq_cb.currentIndexChanged.connect(self._emit)
-        f.addRow("Frequency mode:", freq_cb)
+        _freq_lbl = QLabel("Frequency mode:")
+        _freq_lbl.setToolTip(_freq_tip)
+        f.addRow(_freq_lbl, freq_cb)
 
         self._wave_count_spin = self._int(f, "wave_count",   "Waves / revolution:", 120, 1, 2000,
                                           tip="Number of complete wave cycles around the model per revolution")
@@ -325,12 +331,15 @@ class SettingsPanel(QScrollArea):
         if self._spacing_label:
             self._spacing_label.setVisible(False)
 
+        _ptn_tip = "Wave shape:\nSine = smooth rounded waves\nTriangular = sharp V-peaks\nSawtooth = asymmetric ramp up, sharp drop"
         ptn = QComboBox()
         ptn.addItems(["sine", "triangular", "sawtooth"])
-        ptn.setToolTip("Wave shape:\nSine = smooth rounded waves\nTriangular = sharp V-peaks\nSawtooth = asymmetric ramp up, sharp drop")
+        ptn.setToolTip(_ptn_tip)
         ptn.currentIndexChanged.connect(self._emit)
         self._widgets["wave_pattern"] = ptn
-        f.addRow("Pattern:", ptn)
+        _ptn_lbl = QLabel("Pattern:")
+        _ptn_lbl.setToolTip(_ptn_tip)
+        f.addRow(_ptn_lbl, ptn)
 
         self._int(f,  "wave_smoothness",   "Smoothness (1-10):",  10,  1, 10,
                   tip="How smooth the wave shape is. 1 = sharp pointy peaks, 10 = very round and gradual")
@@ -344,52 +353,54 @@ class SettingsPanel(QScrollArea):
                   tip="Extend the alternation cycle by this many waves to move the seam to a different position.\n"
                       "0 = no shift")
 
+        _sp_tip = ("Place the phase-alternation seam at a specific corner or\n"
+                   "direction of the model (front=+Y, right=+X).\n"
+                   "'sharpest' finds the most acute geometric corner.")
         sp = QComboBox()
         sp.addItems(["auto", "front", "back", "left", "right",
                      "front_right", "front_left", "back_right", "back_left", "sharpest"])
-        sp.setToolTip("Place the phase-alternation seam at a specific corner or\n"
-                      "direction of the model (front=+Y, right=+X).\n"
-                      "'sharpest' finds the most acute geometric corner.")
+        sp.setToolTip(_sp_tip)
         sp.currentIndexChanged.connect(self._emit)
         self._widgets["seam_position"] = sp
-        f.addRow("Seam position:", sp)
+        _sp_lbl = QLabel("Seam position:")
+        _sp_lbl.setToolTip(_sp_tip)
+        f.addRow(_sp_lbl, sp)
 
         self._dbl(f, "seam_transition_waves", "Seam blend (waves):", 0.0, 0.0, 10.0, 0.5,
                   tip="Blend the seam phase transition over this many waves.\n"
                       "0 = hard step. 2.0 = gradual two-wave crossfade (less visible seam)")
 
-        # ── Wave phase offset (peak-shift compensation) ───────────────────────
-        phase_chk = QCheckBox("Enable wave phase offset")
-        phase_chk.setChecked(False)
-        phase_chk.setToolTip(
-            "Shifts the wave peaks by a fixed angular amount to compensate\n"
-            "for printer-dynamics distortion during curved-path printing.\n\n"
-            "When printing a circle, acceleration/deceleration can make\n"
-            "peaks appear shifted relative to where they should land.\n"
-            "Positive values move peaks earlier; negative moves them later.\n\n"
-            "Start with small values (±5–30°) and adjust until the printed\n"
-            "peaks are evenly spaced as they appear on screen."
+        # ── Wave skew (shape warp to combat running-wave artifact) ────────────
+        skew_tip = (
+            "Warps the wave shape so the peak occurs earlier or later in each cycle,\n"
+            "compensating for the 'running wave' distortion some printers produce.\n\n"
+            "When printing curved paths, acceleration/deceleration can stretch\n"
+            "one side of each wave, making the rise slower than the fall (or vice versa).\n\n"
+            "Positive values move the peak later in the cycle (slow rise / fast fall).\n"
+            "Negative values move the peak earlier (fast rise / slow fall).\n\n"
+            "Start with small values (±10–30) and compare printed output to the\n"
+            "on-screen preview until the peaks look symmetric."
         )
-        phase_chk.stateChanged.connect(self._emit)
-        self._widgets["wave_phase_offset_enabled"] = phase_chk
-        f.addRow("", phase_chk)
+        skew_chk = QCheckBox("Enable wave skew")
+        skew_chk.setChecked(False)
+        skew_chk.setToolTip(skew_tip)
+        skew_chk.stateChanged.connect(self._emit)
+        self._widgets["wave_skew_enabled"] = skew_chk
+        f.addRow("", skew_chk)
 
-        phase_spin = QDoubleSpinBox()
-        phase_spin.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        phase_spin.setRange(-180.0, 180.0)
-        phase_spin.setSingleStep(5.0)
-        phase_spin.setDecimals(1)
-        phase_spin.setValue(0.0)
-        phase_spin.setSuffix("°")
-        phase_spin.setFixedWidth(self._SPIN_W)
-        phase_spin.setToolTip(
-            "Wave phase offset in degrees (one full wave period = 360°).\n"
-            "Positive = shift peaks to appear earlier in the wave cycle.\n"
-            "Negative = shift peaks later."
-        )
-        phase_spin.valueChanged.connect(self._emit)
-        self._widgets["wave_phase_offset"] = phase_spin
-        f.addRow("Peak offset (°):", phase_spin)
+        skew_spin = QDoubleSpinBox()
+        skew_spin.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+        skew_spin.setRange(-100.0, 100.0)
+        skew_spin.setSingleStep(5.0)
+        skew_spin.setDecimals(1)
+        skew_spin.setValue(0.0)
+        skew_spin.setFixedWidth(self._SPIN_W)
+        skew_spin.setToolTip(skew_tip)
+        skew_spin.valueChanged.connect(self._emit)
+        self._widgets["wave_skew"] = skew_spin
+        skew_lbl = QLabel("Wave skew strength:")
+        skew_lbl.setToolTip(skew_tip)
+        f.addRow(skew_lbl, skew_spin)
 
         parent.addWidget(g)
 
@@ -400,25 +411,31 @@ class SettingsPanel(QScrollArea):
                   tip="Height of the reinforced base zone before mesh waves start. "
                       "The base uses reduced or no amplitude for structural integrity")
 
+        _bm_tip = ("Base reinforcement mode:\n"
+                   "Fewer gaps: reduces wave amplitude to minimize gaps\n"
+                   "Tighter waves: compresses wave spacing in the base\n"
+                   "Solid then mesh: prints solid layers first, then transitions to mesh")
         bm = QComboBox()
         bm.addItems(["fewer_gaps", "tighter_waves", "solid_then_mesh"])
-        bm.setToolTip("Base reinforcement mode:\n"
-                      "Fewer gaps: reduces wave amplitude to minimize gaps\n"
-                      "Tighter waves: compresses wave spacing in the base\n"
-                      "Solid then mesh: prints solid layers first, then transitions to mesh")
+        bm.setToolTip(_bm_tip)
         bm.currentIndexChanged.connect(self._emit)
         self._widgets["base_mode"] = bm
-        f.addRow("Base mode:", bm)
+        _bm_lbl = QLabel("Base mode:")
+        _bm_lbl.setToolTip(_bm_tip)
+        f.addRow(_bm_lbl, bm)
 
+        _bt_tip = ("How amplitude ramps up from base to full mesh:\n"
+                   "Exponential: slow start, fast finish (smooth)\n"
+                   "Linear: constant rate\n"
+                   "Step: instant jump to full amplitude")
         bt = QComboBox()
         bt.addItems(["exponential", "linear", "step"])
-        bt.setToolTip("How amplitude ramps up from base to full mesh:\n"
-                      "Exponential: slow start, fast finish (smooth)\n"
-                      "Linear: constant rate\n"
-                      "Step: instant jump to full amplitude")
+        bt.setToolTip(_bt_tip)
         bt.currentIndexChanged.connect(self._emit)
         self._widgets["base_transition"] = bt
-        f.addRow("Transition:", bt)
+        _bt_lbl = QLabel("Transition:")
+        _bt_lbl.setToolTip(_bt_tip)
+        f.addRow(_bt_lbl, bt)
 
         parent.addWidget(g)
 
@@ -460,7 +477,10 @@ class SettingsPanel(QScrollArea):
             spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
-        form.addRow(label, spin)
+        lbl = QLabel(label)
+        if tip:
+            lbl.setToolTip(tip)
+        form.addRow(lbl, spin)
         return spin
 
     def _int(self, form, key, label, default, lo, hi, tip: str = "") -> QSpinBox:
@@ -472,7 +492,10 @@ class SettingsPanel(QScrollArea):
             spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
-        form.addRow(label, spin)
+        lbl = QLabel(label)
+        if tip:
+            lbl.setToolTip(tip)
+        form.addRow(lbl, spin)
         return spin
 
     # ── Slots ────────────────────────────────────────────────────────────────
@@ -537,8 +560,8 @@ class SettingsPanel(QScrollArea):
             "seam_shift":               w["seam_shift"].value(),
             "seam_position":            w["seam_position"].currentText(),
             "seam_transition_waves":    w["seam_transition_waves"].value(),
-            "wave_phase_offset_enabled": w["wave_phase_offset_enabled"].isChecked(),
-            "wave_phase_offset":        w["wave_phase_offset"].value(),
+            "wave_skew_enabled":        w["wave_skew_enabled"].isChecked(),
+            "wave_skew":                w["wave_skew"].value(),
             "base_height":           w["base_height"].value(),
             "base_mode":         w["base_mode"].currentText(),
             "base_transition":   w["base_transition"].currentText(),
@@ -652,9 +675,9 @@ class SettingsPanel(QScrollArea):
             _set_dbl("seam_shift",                 ms.get("seam_shift"))
             _set_combo("seam_position",            ms.get("seam_position"))
             _set_dbl("seam_transition_waves",        ms.get("seam_transition_waves"))
-            if ms.get("wave_phase_offset_enabled") is not None:
-                w["wave_phase_offset_enabled"].setChecked(bool(ms["wave_phase_offset_enabled"]))
-            _set_dbl("wave_phase_offset",            ms.get("wave_phase_offset"))
+            if ms.get("wave_skew_enabled") is not None:
+                w["wave_skew_enabled"].setChecked(bool(ms["wave_skew_enabled"]))
+            _set_dbl("wave_skew",                    ms.get("wave_skew"))
             _set_dbl("base_height",                ms.get("base_height"))
             _set_combo("base_mode",        ms.get("base_mode"))
             _set_combo("base_transition",  ms.get("base_transition"))

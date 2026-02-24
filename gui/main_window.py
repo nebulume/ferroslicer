@@ -321,6 +321,7 @@ class MainWindow(QMainWindow):
 
         self.send_btn = QPushButton("◆  Send to Printer")
         self.send_btn.setFixedHeight(36)
+        self.send_btn.setMinimumWidth(170)
         self.send_btn.setEnabled(False)
         self.send_btn.clicked.connect(self._send_to_printer)
         self.send_btn.setStyleSheet(
