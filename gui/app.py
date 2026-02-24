@@ -159,7 +159,12 @@ QSplitter::handle:vertical  { height: 2px; }
 """
 
 
-_RES = Path(__file__).parent / "resources"
+# In a PyInstaller frozen bundle the real data files live under sys._MEIPASS.
+# __file__ still carries the module's virtual path so we fall back to _MEIPASS.
+if getattr(sys, "frozen", False):
+    _RES = Path(sys._MEIPASS) / "gui" / "resources"
+else:
+    _RES = Path(__file__).parent / "resources"
 
 
 def main():

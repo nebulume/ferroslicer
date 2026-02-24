@@ -589,6 +589,7 @@ fn generate_spiral_with_waves(
     target_samples_per_wave: i32,
     wave_asymmetry: bool,
     wave_asym_intensity: f64,
+    wave_phase_offset_deg: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let num_layers = layer_zs.len();
     if num_layers == 0 {
@@ -803,7 +804,7 @@ fn generate_spiral_with_waves(
             // We blend wave VALUES (not phase constants) so the mesh pattern
             // fades to zero amplitude then rebuilds in the opposite phase —
             // a true crossfade rather than a phase slide.
-            let base_phase = (wi.angle * waves_per_rev).rem_euclid(360.0);
+            let base_phase = ((wi.angle * waves_per_rev) + wave_phase_offset_deg).rem_euclid(360.0);
             let wave_raw = if cycle_len_revs > 0.0 {
                 let adjusted_rev = wi.revolution + seam_revolution_offset;
                 let cycle = (adjusted_rev / cycle_len_revs) as i64;

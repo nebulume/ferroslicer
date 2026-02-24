@@ -256,6 +256,7 @@ class SettingsPanel(QScrollArea):
             spin.setRange(1, 200)
             spin.setValue(defaults[n - 1])
             spin.setSuffix(" %")
+            spin.setFixedWidth(self._SPIN_W)
             spin.setToolTip(
                 f"Print speed for layer {n} after each alternation boundary\n"
                 f"(% of the main print speed).\n"
@@ -357,6 +358,39 @@ class SettingsPanel(QScrollArea):
                   tip="Blend the seam phase transition over this many waves.\n"
                       "0 = hard step. 2.0 = gradual two-wave crossfade (less visible seam)")
 
+        # ── Wave phase offset (peak-shift compensation) ───────────────────────
+        phase_chk = QCheckBox("Enable wave phase offset")
+        phase_chk.setChecked(False)
+        phase_chk.setToolTip(
+            "Shifts the wave peaks by a fixed angular amount to compensate\n"
+            "for printer-dynamics distortion during curved-path printing.\n\n"
+            "When printing a circle, acceleration/deceleration can make\n"
+            "peaks appear shifted relative to where they should land.\n"
+            "Positive values move peaks earlier; negative moves them later.\n\n"
+            "Start with small values (±5–30°) and adjust until the printed\n"
+            "peaks are evenly spaced as they appear on screen."
+        )
+        phase_chk.stateChanged.connect(self._emit)
+        self._widgets["wave_phase_offset_enabled"] = phase_chk
+        f.addRow("", phase_chk)
+
+        phase_spin = QDoubleSpinBox()
+        phase_spin.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+        phase_spin.setRange(-180.0, 180.0)
+        phase_spin.setSingleStep(5.0)
+        phase_spin.setDecimals(1)
+        phase_spin.setValue(0.0)
+        phase_spin.setSuffix("°")
+        phase_spin.setFixedWidth(self._SPIN_W)
+        phase_spin.setToolTip(
+            "Wave phase offset in degrees (one full wave period = 360°).\n"
+            "Positive = shift peaks to appear earlier in the wave cycle.\n"
+            "Negative = shift peaks later."
+        )
+        phase_spin.valueChanged.connect(self._emit)
+        self._widgets["wave_phase_offset"] = phase_spin
+        f.addRow("Peak offset (°):", phase_spin)
+
         parent.addWidget(g)
 
     def _add_base_group(self, parent):
@@ -403,10 +437,16 @@ class SettingsPanel(QScrollArea):
                   tip="Gap between skirt loop and the model. 0 = touching (skirt sits against the model)")
         self._int(f, "skirt_height",   "Skirt layers:",      1,   1,   10,
                   tip="Number of skirt loops stacked vertically")
+        self._int(f, "skirt_loops",    "Skirt loops:",        1,   1,    8,
+                  tip="Number of concentric skirt loops printed side-by-side.\n"
+                      "More loops = better nozzle priming and bed adhesion.\n"
+                      "Each loop is spaced one nozzle-width from the previous.")
 
         parent.addWidget(g)
 
     # ── Widget factories ─────────────────────────────────────────────────────
+
+    _SPIN_W = 90  # uniform width for all numeric input boxes
 
     def _dbl(self, form, key, label, default, lo, hi, step, tip: str = "") -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
@@ -415,17 +455,19 @@ class SettingsPanel(QScrollArea):
         spin.setSingleStep(step)
         spin.setDecimals(len(str(step).split(".")[-1]) if "." in str(step) else 1)
         spin.setValue(default)
+        spin.setFixedWidth(self._SPIN_W)
         if tip:
             spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
         self._widgets[key] = spin
-        lbl = form.addRow(label, spin)
+        form.addRow(label, spin)
         return spin
 
     def _int(self, form, key, label, default, lo, hi, tip: str = "") -> QSpinBox:
         spin = QSpinBox()
         spin.setRange(lo, hi)
         spin.setValue(default)
+        spin.setFixedWidth(self._SPIN_W)
         if tip:
             spin.setToolTip(tip)
         spin.valueChanged.connect(self._emit)
@@ -492,9 +534,11 @@ class SettingsPanel(QScrollArea):
             "wave_smoothness":   w["wave_smoothness"].value(),
             "layer_alternation":     w["layer_alternation"].value(),
             "phase_offset":          w["phase_offset"].value(),
-            "seam_shift":            w["seam_shift"].value(),
-            "seam_position":         w["seam_position"].currentText(),
-            "seam_transition_waves": w["seam_transition_waves"].value(),
+            "seam_shift":               w["seam_shift"].value(),
+            "seam_position":            w["seam_position"].currentText(),
+            "seam_transition_waves":    w["seam_transition_waves"].value(),
+            "wave_phase_offset_enabled": w["wave_phase_offset_enabled"].isChecked(),
+            "wave_phase_offset":        w["wave_phase_offset"].value(),
             "base_height":           w["base_height"].value(),
             "base_mode":         w["base_mode"].currentText(),
             "base_transition":   w["base_transition"].currentText(),
@@ -521,6 +565,7 @@ class SettingsPanel(QScrollArea):
             "skirt_height":           w["skirt_height"].value(),
             "seam_ramp_enabled":      w["seam_ramp_enabled"].isChecked(),
             "seam_ramp_pcts":         [w[f"seam_ramp_pct_{n}"].value() for n in range(1, 5)],
+            "skirt_loops":            w["skirt_loops"].value(),
         }
         if is_vase:
             print_s["spiral_points_per_degree"] = w["spiral_points_per_degree"].value()
@@ -583,6 +628,7 @@ class SettingsPanel(QScrollArea):
                 w["skirt_enabled"].setChecked(bool(ps["skirt_enabled"]))
             _set_dbl("skirt_distance", ps.get("skirt_distance"))
             _set_int("skirt_height",   ps.get("skirt_height"))
+            _set_int("skirt_loops",    ps.get("skirt_loops"))
 
             if ps.get("seam_ramp_enabled") is not None:
                 w["seam_ramp_enabled"].setChecked(bool(ps["seam_ramp_enabled"]))
@@ -605,7 +651,10 @@ class SettingsPanel(QScrollArea):
             _set_dbl("phase_offset",               ms.get("phase_offset"))
             _set_dbl("seam_shift",                 ms.get("seam_shift"))
             _set_combo("seam_position",            ms.get("seam_position"))
-            _set_dbl("seam_transition_waves",      ms.get("seam_transition_waves"))
+            _set_dbl("seam_transition_waves",        ms.get("seam_transition_waves"))
+            if ms.get("wave_phase_offset_enabled") is not None:
+                w["wave_phase_offset_enabled"].setChecked(bool(ms["wave_phase_offset_enabled"]))
+            _set_dbl("wave_phase_offset",            ms.get("wave_phase_offset"))
             _set_dbl("base_height",                ms.get("base_height"))
             _set_combo("base_mode",        ms.get("base_mode"))
             _set_combo("base_transition",  ms.get("base_transition"))
