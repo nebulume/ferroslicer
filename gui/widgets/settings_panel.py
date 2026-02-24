@@ -12,7 +12,18 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QSlider, QSizePolicy, QPushButton, QInputDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale, QByteArray
+from PyQt6.QtGui import QPixmap, QPainter
+from PyQt6.QtSvg import QSvgRenderer
+
+def _res_path() -> Path:
+    """Path to gui/resources — works in both dev and frozen .app."""
+    if getattr(sys, "frozen", False):
+        import sys as _sys
+        return Path(_sys._MEIPASS) / "gui" / "resources"
+    # settings_panel.py lives in gui/widgets/ → up two levels → gui/resources
+    return Path(__file__).parent.parent / "resources"
+
 
 def _user_data_dir() -> Path:
     """Writable directory for user settings — redirects to ~/Documents/FerroSlicer/ when frozen."""
@@ -57,6 +68,7 @@ class SettingsPanel(QScrollArea):
         self._save_timer.setInterval(500)
         self._save_timer.timeout.connect(self._save_to_disk)
 
+        self._add_logo_header(layout)
         self._add_presets_bar(layout)
         self._add_printer_group(layout)
         self._add_motion_group(layout)
@@ -72,6 +84,57 @@ class SettingsPanel(QScrollArea):
 
         # Restore last session's values (silently ignore if file missing/corrupt)
         self._load_from_disk()
+
+    # ── Logo header ──────────────────────────────────────────────────────────
+
+    def _add_logo_header(self, parent):
+        """Compact branded header: SVG logo + app name + tagline."""
+        header = QWidget()
+        header.setFixedHeight(56)
+        header.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            " stop:0 #0d1a28, stop:1 #0a1520);"
+            "border-bottom: 1px solid #1e3a50;"
+        )
+        h = QHBoxLayout(header)
+        h.setContentsMargins(8, 4, 8, 4)
+        h.setSpacing(8)
+
+        # Render the SVG logo into a 44×44 QPixmap
+        logo_lbl = QLabel()
+        logo_lbl.setFixedSize(44, 44)
+        svg_path = _res_path() / "ferroslicer_logo.svg"
+        if svg_path.exists():
+            renderer = QSvgRenderer(str(svg_path))
+            pix = QPixmap(44, 44)
+            pix.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pix)
+            renderer.render(painter)
+            painter.end()
+            logo_lbl.setPixmap(pix)
+        h.addWidget(logo_lbl)
+
+        # App name + tagline
+        text_col = QWidget()
+        text_layout = QVBoxLayout(text_col)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(0)
+
+        name_lbl = QLabel("FerroSlicer")
+        name_lbl.setStyleSheet(
+            "color: #7ed4f7; font-size: 15px; font-weight: 700;"
+            "letter-spacing: 1px; background: transparent;"
+        )
+        text_layout.addWidget(name_lbl)
+
+        sub_lbl = QLabel("mesh vase slicer")
+        sub_lbl.setStyleSheet(
+            "color: #3a7a9f; font-size: 10px; background: transparent;"
+        )
+        text_layout.addWidget(sub_lbl)
+
+        h.addWidget(text_col, stretch=1)
+        parent.addWidget(header)
 
     # ── Presets bar ──────────────────────────────────────────────────────────
 
