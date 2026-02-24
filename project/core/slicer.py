@@ -3,10 +3,25 @@ Main MeshVase Slicer orchestrator - coordinates all components.
 '''
 
 import os
+import sys
 import math
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+
+
+def _writable_base() -> Path:
+    """Return a writable base directory for output files.
+
+    Inside a frozen .app bundle the working directory is read-only, so we
+    redirect to ~/Documents/FerroSlicer.  When running from source the repo
+    root is used as-is.
+    """
+    if getattr(sys, "frozen", False):
+        base = Path.home() / "Documents" / "FerroSlicer"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    return Path.cwd()
 from .logger import setup_logger
 from .config import Config
 from .stl_parser import STLParser
@@ -137,7 +152,8 @@ class MeshVaseSlicer:
             config: Config instance
         """
         self.config = config
-        self.output_dir = config.get("output_dir", "output")
+        raw_output = config.get("output_dir", "output")
+        self.output_dir = str(_writable_base() / raw_output)
 
         # Create output directory
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
