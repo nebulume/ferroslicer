@@ -532,7 +532,7 @@ class MainWindow(QMainWindow):
         self._refresh_generate_btn_style()
 
         overrides = self.settings_panel.get_config_overrides()
-        ip = self._app_settings.get("printer_ip", "")
+        ip = get_active_profile(self._app_settings).get("printer_ip", "")
         pdb.add_job(self._stl_path, gcode_path, overrides, printer_ip=ip)
 
         QTimer.singleShot(300, self._start_toolpath_preview)
@@ -561,8 +561,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No GCode", "Generate GCode first.")
             return
 
-        ip   = self._app_settings.get("printer_ip", "192.168.1.65")
-        port = self._app_settings.get("printer_port", 80)
+        profile = get_active_profile(self._app_settings)
+        ip   = profile.get("printer_ip", "192.168.1.65")
+        port = profile.get("printer_port", 80)
 
         from klipper.moonraker import MoonrakerClient
         client = MoonrakerClient(ip, port)
@@ -603,8 +604,9 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _poll_klipper(self):
-        ip   = self._app_settings.get("printer_ip", "192.168.1.65")
-        port = self._app_settings.get("printer_port", 80)
+        profile = get_active_profile(self._app_settings)
+        ip   = profile.get("printer_ip", "192.168.1.65")
+        port = profile.get("printer_port", 80)
         from klipper.moonraker import MoonrakerClient
         client = MoonrakerClient(ip, port)
         state = client.get_print_state()
