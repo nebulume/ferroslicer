@@ -80,7 +80,8 @@ class Config:
                 "skirt_height": 1,
                 "skirt_loops": 1,
                 "seam_ramp_enabled": False,
-                "seam_ramp_pcts": [25, 50, 75, 100]
+                "seam_ramp_pcts": [25, 50, 75, 100],
+                "seam_ramp_layers": []
             },
             "mesh_settings": {
                 "wave_amplitude": 2.0,

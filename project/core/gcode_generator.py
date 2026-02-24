@@ -54,10 +54,12 @@ class GCodeGenerator:
         retract_speed: float = 40.0,    # mm/s
         # ── Seam speed ramp ───────────────────────────────────────────────────
         seam_ramp_enabled: bool = False,
-        seam_ramp_pcts: list = None,    # e.g. [25, 50, 75, 100] — % of print_speed
+        seam_ramp_pcts: list = None,    # legacy: e.g. [25, 50, 75, 100] — % of print_speed
+        seam_ramp_layers: list = None,  # new per-layer dicts with speed+extrusion settings
         layer_alternation: int = 2,     # from mesh_settings
         seam_revolution_offset: float = 0.0,  # phase offset from seam_position setting
         seam_cycle_len: float = 0.0,    # alternation cycle length in revolutions (0 = use layer_alternation)
+        waves_per_rev: float = 0.0,     # waves per revolution (for variable extrusion phase)
         # ── Skirt ─────────────────────────────────────────────────────────────
         skirt_loops: int = 1,           # number of concentric skirt loops side-by-side
     ):
@@ -94,9 +96,11 @@ class GCodeGenerator:
         self.retract_speed = retract_speed
         self.seam_ramp_enabled        = seam_ramp_enabled
         self.seam_ramp_pcts           = list(seam_ramp_pcts) if seam_ramp_pcts else []
+        self.seam_ramp_layers         = list(seam_ramp_layers) if seam_ramp_layers else []
         self.layer_alternation        = max(1, int(layer_alternation))
         self.seam_revolution_offset   = float(seam_revolution_offset)
         self.seam_cycle_len           = float(seam_cycle_len) if seam_cycle_len > 0 else float(layer_alternation)
+        self.waves_per_rev            = float(waves_per_rev)
         self.skirt_loops              = max(1, int(skirt_loops))
 
         # Calculated values
@@ -207,21 +211,56 @@ class GCodeGenerator:
                 # Uses _revs + seam_revolution_offset (mirrors the Rust wave phase logic)
                 # so the speed change is seam-synchronised with the wave alternation.
                 # Allow spiral_points to carry updated offset/cycle from the worker.
-                _ramp_on        = self.seam_ramp_enabled and bool(self.seam_ramp_pcts)
-                _ramp_pcts      = self.seam_ramp_pcts
                 _cycle_len      = getattr(spiral_points, '_cycle_len_revs', self.seam_cycle_len)
                 _seam_off       = getattr(spiral_points, '_seam_revolution_offset', self.seam_revolution_offset)
                 revs            = spiral_points._revs           # cumulative revolution count per point
 
+                # Resolve which settings source to use for speed ramp.
+                # New seam_ramp_layers takes priority; fall back to legacy seam_ramp_pcts.
+                _ramp_layers    = self.seam_ramp_layers   # list of per-layer dicts
+                _ramp_pcts      = self.seam_ramp_pcts     # legacy speed-only list
+                _ramp_on        = self.seam_ramp_enabled and (bool(_ramp_layers) or bool(_ramp_pcts))
+                _varx_on        = self.seam_ramp_enabled and bool(_ramp_layers) and self.waves_per_rev > 0
+
                 # Build speed LUT indexed by integer position within the alternation cycle.
-                # Entries 0..len(ramp_pcts)-1 use ramp speeds; remaining use full speed.
                 _max_pos = max(1, int(math.ceil(_cycle_len)))
                 _rev_lut = []
                 for _pos in range(_max_pos):
-                    if _ramp_on and _pos < len(_ramp_pcts):
+                    if _ramp_on and _ramp_layers and _pos < len(_ramp_layers):
+                        _rev_lut.append(int(spd * _ramp_layers[_pos]["speed_pct"] / 100.0 * 60))
+                    elif _ramp_on and _ramp_pcts and _pos < len(_ramp_pcts):
                         _rev_lut.append(int(spd * _ramp_pcts[_pos] / 100.0 * 60))
                     else:
                         _rev_lut.append(spd_f)
+
+                # Pre-compute wave E-multiplier helper (used per-point when _varx_on)
+                _TWO_PI = 2.0 * math.pi
+                def _wave_e_mult(rev_val: float, layer_idx: int) -> float:
+                    """Return E multiplier for this point's wave phase."""
+                    if layer_idx >= len(_ramp_layers):
+                        return 1.0
+                    ld = _ramp_layers[layer_idx]
+                    if not ld.get("var_extrusion"):
+                        return 1.0
+                    # Normalized sine displacement: -1=valley, +1=peak
+                    wave_phase = (rev_val * self.waves_per_rev) % 1.0
+                    d = math.sin(_TWO_PI * wave_phase)
+                    if d >= 0:  # positive half: near peak
+                        base_e  = ld.get("v2p_rate", 100) / 100.0
+                        extreme = 1.0 + ld.get("peak_pct", 0) / 100.0
+                        ramp    = ld.get("peak_ramp", "gradual")
+                    else:       # negative half: near valley
+                        base_e  = ld.get("p2v_rate", 100) / 100.0
+                        extreme = 1.0 + ld.get("valley_pct", 0) / 100.0
+                        ramp    = ld.get("valley_ramp", "gradual")
+                    t = abs(d)  # 0 at midpoint, 1 at extreme
+                    if ramp == "gradual":
+                        w = 3*t*t - 2*t*t*t   # smoothstep
+                    elif ramp == "parabolic":
+                        w = t * t
+                    else:
+                        w = t
+                    return base_e + (extreme - base_e) * w
 
                 cx = float(self.current_position.x)
                 cy = float(self.current_position.y)
@@ -240,14 +279,18 @@ class GCodeGenerator:
                     seg_dz = tz - cz
                     seg_len = math.sqrt(seg_dx * seg_dx + seg_dy * seg_dy + seg_dz * seg_dz)
                     if seg_len > 0.001:
+                        _rev_val = float(revs[i])
                         extrusion = seg_len * e_factor
-                        total_e += extrusion
                         if zs[i] <= first_layer_z_thresh:
                             f_val = spd_f_first
                         else:
                             # Position within cycle: same formula as Rust wave phase logic
-                            _pos = int((float(revs[i]) + _seam_off) % _cycle_len)
+                            _pos = int((_rev_val + _seam_off) % _cycle_len)
                             f_val = _rev_lut[min(_pos, _max_pos - 1)]
+                            # Variable extrusion: modulate E by wave phase
+                            if _varx_on:
+                                extrusion *= _wave_e_mult(_rev_val, _pos)
+                        total_e += extrusion
                         if f_val != _prev_f:
                             lines.append(
                                 f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
