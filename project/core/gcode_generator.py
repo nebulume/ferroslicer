@@ -196,25 +196,22 @@ class GCodeGenerator:
                 first_layer_z_thresh = z_base + lh   # anything at/below this is "first layer"
                 spd_f_first = int(spd * self.first_layer_speed_pct / 100.0 * 60)
 
-                # Pre-build a speed lookup table indexed by layer index so the inner
-                # loop stays branchless for the common (no-ramp) case.
+                # Revolution-based speed ramp — resets at each alternation seam.
+                # Uses _revs (cumulative revolution count) so the speed change is
+                # seam-synchronised rather than Z-height-based.
                 _ramp_on   = self.seam_ramp_enabled and bool(self.seam_ramp_pcts)
                 _ramp_pcts = self.seam_ramp_pcts
                 _alt       = self.layer_alternation
-                _max_li    = int((float(max(zs)) - z_base) / lh) + 3
-                _speed_lut = []
-                for _li in range(_max_li):
-                    _z_li = z_base + _li * lh
-                    if _z_li <= first_layer_z_thresh:
-                        _speed_lut.append(spd_f_first)
-                    elif _ramp_on:
-                        _pos = _li % _alt
-                        if _pos < len(_ramp_pcts):
-                            _speed_lut.append(int(spd * _ramp_pcts[_pos] / 100.0 * 60))
-                        else:
-                            _speed_lut.append(spd_f)
+                revs       = spiral_points._revs   # cumulative revolution count per point
+
+                # Small LUT: one speed entry per layer within the alternation cycle.
+                # Index 0 = first revolution after seam (slowest), index _alt-1 = last.
+                _rev_lut = []
+                for _pos in range(_alt):
+                    if _ramp_on and _pos < len(_ramp_pcts):
+                        _rev_lut.append(int(spd * _ramp_pcts[_pos] / 100.0 * 60))
                     else:
-                        _speed_lut.append(spd_f)
+                        _rev_lut.append(spd_f)
 
                 cx = float(self.current_position.x)
                 cy = float(self.current_position.y)
@@ -235,9 +232,10 @@ class GCodeGenerator:
                     if seg_len > 0.001:
                         extrusion = seg_len * e_factor
                         total_e += extrusion
-                        _li = int((float(zs[i]) - z_base) / lh)
-                        _li = min(_li, _max_li - 1)
-                        f_val = _speed_lut[_li]
+                        if zs[i] <= first_layer_z_thresh:
+                            f_val = spd_f_first
+                        else:
+                            f_val = _rev_lut[int(float(revs[i])) % _alt]
                         if f_val != _prev_f:
                             lines.append(
                                 f"G1 X{tx:.3f} Y{ty:.3f} Z{tz:.3f} E{extrusion:.5f} F{f_val}"
