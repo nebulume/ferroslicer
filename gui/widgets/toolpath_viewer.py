@@ -192,12 +192,17 @@ class GCodeLoaderThread(QThread):
                                 segments.append((seg_start, len(xs) - seg_start))
                             seg_start  = len(xs)
                             had_travel = False
+                        # Only adopt the new F when it belongs to an extrusion move,
+                        # so travel feedrates don't corrupt the print-speed colour.
+                        if nf > 0:
+                            cur_f = nf
                         xs.append(nx); ys.append(ny); zs.append(nz)
-                        spds.append(nf / 60.0)   # mm/min → mm/s
+                        spds.append(cur_f / 60.0)   # mm/min → mm/s
                     elif has_xy:
                         had_travel = True
 
-                    cur_x, cur_y, cur_z, cur_e, cur_f = nx, ny, nz, ne, nf
+                    cur_x, cur_y, cur_z, cur_e = nx, ny, nz, ne
+                    # cur_f updated only on extrusion (see above)
 
             if xs and len(xs) - seg_start > 0:
                 segments.append((seg_start, len(xs) - seg_start))
