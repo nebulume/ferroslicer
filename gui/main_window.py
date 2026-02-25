@@ -627,19 +627,47 @@ class MainWindow(QMainWindow):
         port = profile.get("printer_port", 80)
         from klipper.moonraker import MoonrakerClient
         client = MoonrakerClient(ip, port)
-        state = client.get_print_state()
+
+        rs = client.get_rich_status()
+        state = rs["state"]
+
+        def _temp(cur, tgt):
+            if tgt > 0:
+                return f"{cur:.0f}/{tgt:.0f}°C"
+            return f"{cur:.0f}°C"
+
+        def _elapsed(secs):
+            secs = int(secs)
+            h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
+            if h:
+                return f"{h}h {m:02d}m"
+            return f"{m}m {s:02d}s"
+
+        nozzle = _temp(rs["nozzle_temp"], rs["nozzle_target"])
+        bed    = _temp(rs["bed_temp"],    rs["bed_target"])
+        temps  = f"N:{nozzle} B:{bed}"
+
         if state == "unknown":
             self.status_klipper_lbl.setText(f"Klipper: {ip} offline")
             self.status_klipper_lbl.setStyleSheet("color: #e74c3c;")
-        elif state == "printing":
-            pct = int(client.get_progress() * 100)
-            self.status_klipper_lbl.setText(f"Klipper: printing {pct}%")
-            self.status_klipper_lbl.setStyleSheet("color: #27ae60;")
+        elif state in ("printing", "paused"):
+            pct  = int(rs["progress"] * 100)
+            elapsed = _elapsed(rs["print_duration"])
+            prefix = "printing" if state == "printing" else "⏸ paused"
+            self.status_klipper_lbl.setText(
+                f"Klipper: {prefix} {pct}% · {temps} · {elapsed}"
+            )
+            color = "#27ae60" if state == "printing" else "#f39c12"
+            self.status_klipper_lbl.setStyleSheet(f"color: {color};")
         elif state == "complete":
-            self.status_klipper_lbl.setText("Klipper: complete")
+            self.status_klipper_lbl.setText(f"Klipper: complete ✓ · {temps}")
             self.status_klipper_lbl.setStyleSheet("color: #2ecc71;")
+        elif state in ("error",):
+            self.status_klipper_lbl.setText(f"Klipper: error · {temps}")
+            self.status_klipper_lbl.setStyleSheet("color: #e74c3c;")
         else:
-            self.status_klipper_lbl.setText(f"Klipper: {ip} — {state or 'idle'}")
+            # standby / idle
+            self.status_klipper_lbl.setText(f"Klipper: idle · {temps}")
             self.status_klipper_lbl.setStyleSheet("color: #aaa;")
 
     # ── Dialogs ───────────────────────────────────────────────────────────────

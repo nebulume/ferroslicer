@@ -57,9 +57,10 @@ class MoonrakerClient:
         return result is not None
 
     def get_printer_status(self) -> Dict[str, Any]:
-        """Return printer objects including print_stats."""
+        """Return printer objects including print_stats and virtual_sdcard."""
         result = self._get(
-            "/printer/objects/query?print_stats&toolhead&heater_bed&extruder"
+            "/printer/objects/query"
+            "?print_stats&virtual_sdcard&display_status&toolhead&heater_bed&extruder"
         )
         if result and "result" in result:
             return result["result"].get("status", {})
@@ -116,11 +117,50 @@ class MoonrakerClient:
         return ps.get("state", "unknown")
 
     def get_progress(self) -> float:
-        """Returns print progress 0.0-1.0, or 0 if not printing."""
+        """Returns print progress 0.0-1.0 from virtual_sdcard file position."""
         status = self.get_printer_status()
-        ps = status.get("print_stats", {})
-        total = ps.get("total_duration", 0)
-        done = ps.get("print_duration", 0)
-        if total > 0:
-            return min(1.0, done / total)
+        # virtual_sdcard.progress is the authoritative GCode file-position percentage
+        vsd = status.get("virtual_sdcard", {})
+        prog = vsd.get("progress", None)
+        if prog is not None:
+            return float(prog)
+        # Fallback: display_status.progress (set by M73 in GCode)
+        ds = status.get("display_status", {})
+        prog = ds.get("progress", None)
+        if prog is not None:
+            return float(prog)
         return 0.0
+
+    def get_rich_status(self) -> Dict[str, Any]:
+        """Return a single-call status dict with progress, temps, state, and elapsed time.
+
+        Keys returned:
+            state (str)        — printing / paused / complete / standby / error / unknown
+            progress (float)   — 0.0–1.0 from virtual_sdcard file position
+            nozzle_temp (float)
+            nozzle_target (float)
+            bed_temp (float)
+            bed_target (float)
+            print_duration (float) — seconds actively printing (excludes pauses)
+            filename (str)
+        """
+        status = self.get_printer_status()
+        ps  = status.get("print_stats", {})
+        vsd = status.get("virtual_sdcard", {})
+        ds  = status.get("display_status", {})
+        ext = status.get("extruder", {})
+        bed = status.get("heater_bed", {})
+
+        # Progress: virtual_sdcard is most accurate; fall back to display_status
+        progress = float(vsd.get("progress") or ds.get("progress") or 0.0)
+
+        return {
+            "state":          ps.get("state", "unknown"),
+            "progress":       progress,
+            "nozzle_temp":    float(ext.get("temperature", 0)),
+            "nozzle_target":  float(ext.get("target", 0)),
+            "bed_temp":       float(bed.get("temperature", 0)),
+            "bed_target":     float(bed.get("target", 0)),
+            "print_duration": float(ps.get("print_duration", 0)),
+            "filename":       ps.get("filename", ""),
+        }
