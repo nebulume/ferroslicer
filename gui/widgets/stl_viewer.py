@@ -210,7 +210,7 @@ class _STLViewerGL(QOpenGLWidget):
         self._raw_extents: tuple = (0.0, 0.0, 0.0)   # (x_mm, y_mm, z_mm)
 
         # ── Transparent mode ──────────────────────────────────────────────────
-        self._transparent: bool = True
+        self._transparent: bool = False
         self._alpha_loc:   int  = -1
 
         # ── Data state ────────────────────────────────────────────────────────
@@ -842,7 +842,7 @@ class STLViewer(QWidget):
         bl.addStretch()
 
         self._transparent_check = QCheckBox("Transparent")
-        self._transparent_check.setChecked(True)
+        self._transparent_check.setChecked(False)
         self._transparent_check.setStyleSheet(
             "QCheckBox { color: #779; font-size: 11px; }"
             "QCheckBox::indicator { width: 13px; height: 13px; }"

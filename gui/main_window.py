@@ -330,6 +330,18 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled { background: #333; color: #666; }"
         )
 
+        self.heat_btn = QPushButton("🔥  Heat Up")
+        self.heat_btn.setFixedHeight(36)
+        self.heat_btn.setToolTip(
+            "Send nozzle and bed target temperatures to the printer.\n"
+            "Uses the Nozzle temp and Bed temp values set in the Printer settings panel."
+        )
+        self.heat_btn.clicked.connect(self._heat_up)
+        self.heat_btn.setStyleSheet(
+            "QPushButton { background: #7a3a12; color: #ffcc88; border-radius: 4px; font-weight: bold; }"
+            "QPushButton:hover { background: #9a4a18; color: #ffd9a0; }"
+        )
+
         self.progress_label = QLabel("")
         self.progress_label.setStyleSheet("color: #aaa; font-size: 11px;")
         self.progress_label.setMinimumWidth(160)
@@ -343,6 +355,7 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self._gcode_chip)
         tb_layout.addWidget(self.reveal_btn)
         tb_layout.addWidget(self.send_btn)
+        tb_layout.addWidget(self.heat_btn)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(5)
@@ -573,6 +586,29 @@ class MainWindow(QMainWindow):
         self.toolpath_viewer.load_gcode(self._gcode_path)
 
     # ── Klipper ───────────────────────────────────────────────────────────────
+
+    def _heat_up(self):
+        """Send nozzle + bed temperature targets to the printer."""
+        cfg     = self.settings_panel.get_config_overrides()
+        printer = cfg.get("printer", {})
+        nozzle  = int(printer.get("nozzle_temp", 260))
+        bed     = int(printer.get("bed_temp",    65))
+
+        profile = get_active_profile(self._app_settings)
+        ip   = profile.get("printer_ip", "192.168.1.65")
+        port = profile.get("printer_port", 80)
+
+        from klipper.moonraker import MoonrakerClient
+        client = MoonrakerClient(ip, port)
+        ok = client.set_temperatures(nozzle, bed)
+        if ok:
+            self.status_file_lbl.setText(
+                f"Heating → nozzle {nozzle}°C, bed {bed}°C"
+            )
+        else:
+            self.status_file_lbl.setText(
+                "Heat up failed — printer offline?"
+            )
 
     def _send_to_printer(self):
         if not self._gcode_path:

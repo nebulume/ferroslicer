@@ -98,6 +98,12 @@ class MoonrakerClient:
         result = self._post(f"/printer/print/start?filename={filename}")
         return result is not None
 
+    def set_temperatures(self, nozzle_c: float, bed_c: float) -> bool:
+        """Set nozzle and bed target temperatures without waiting (M104 + M140)."""
+        script = f"M104 S{int(nozzle_c)}\nM140 S{int(bed_c)}"
+        result = self._post("/printer/gcode/script", data={"script": script})
+        return result is not None
+
     def cancel_print(self) -> bool:
         result = self._post("/printer/print/cancel")
         return result is not None
