@@ -120,7 +120,7 @@ class GCodeLoaderThread(QThread):
                  the printed part.
       speeds   — (N,) float32  print speed in mm/s at each extrusion point
     """
-    loaded = pyqtSignal(object, object, object, object)
+    loaded = pyqtSignal(object, object, object, object, object)
     error  = pyqtSignal(str)
 
     def __init__(self, path: str, parent=None):
@@ -129,7 +129,7 @@ class GCodeLoaderThread(QThread):
 
     def run(self):
         try:
-            xs, ys, zs, spds = [], [], [], []
+            xs, ys, zs, spds, erates = [], [], [], [], []
 
             segments: list[tuple[int, int]] = []
             seg_start  = 0
@@ -198,6 +198,10 @@ class GCodeLoaderThread(QThread):
                             cur_f = nf
                         xs.append(nx); ys.append(ny); zs.append(nz)
                         spds.append(cur_f / 60.0)   # mm/min → mm/s
+                        # Extrusion rate: filament mm per XY-travel mm
+                        delta_e = ne if relative_e else (ne - cur_e)
+                        move_xy = math.hypot(nx - cur_x, ny - cur_y)
+                        erates.append(delta_e / max(move_xy, 1e-6))
                     elif has_xy:
                         had_travel = True
 
@@ -216,7 +220,8 @@ class GCodeLoaderThread(QThread):
                 np.array(ys, dtype=np.float32),
                 np.array(zs, dtype=np.float32),
             ])
-            speeds = np.array(spds, dtype=np.float32)
+            speeds     = np.array(spds,   dtype=np.float32)
+            extrusions = np.array(erates, dtype=np.float32)
 
             # ── Seam / revolution detection ───────────────────────────────────
             # Track the position angle of each point relative to the XY centroid.
@@ -308,7 +313,7 @@ class GCodeLoaderThread(QThread):
                         np.array(seam_zs, dtype=np.float32),
                     ])
 
-            self.loaded.emit(pts, segments, seam_pts, speeds)
+            self.loaded.emit(pts, segments, seam_pts, speeds, extrusions)
 
         except Exception as exc:
             self.error.emit(str(exc))
@@ -323,6 +328,22 @@ def _speed_colormap(t: np.ndarray) -> np.ndarray:
     stops_r = np.array([0.05, 0.0,  0.1],  dtype=np.float32)
     stops_g = np.array([0.88, 0.82, 0.28], dtype=np.float32)
     stops_b = np.array([0.28, 0.92, 1.0],  dtype=np.float32)
+    r = np.interp(t, stops_t, stops_r).astype(np.float32)
+    g = np.interp(t, stops_t, stops_g).astype(np.float32)
+    b = np.interp(t, stops_t, stops_b).astype(np.float32)
+    return np.column_stack([r, g, b])
+
+
+# ── Extrusion colormap (blue low → green mid → red high) ─────────────────────
+
+def _extrusion_colormap(t: np.ndarray) -> np.ndarray:
+    """Map normalised extrusion-rate values t ∈ [0,1] to RGB.
+    Low (valley/sparse) = blue, mid (normal flow) = green, high (peak/heavy) = red.
+    Output shape (N,3) float32."""
+    stops_t = np.array([0.0,  0.5,  1.0],  dtype=np.float32)
+    stops_r = np.array([0.08, 0.05, 1.00], dtype=np.float32)
+    stops_g = np.array([0.18, 0.92, 0.15], dtype=np.float32)
+    stops_b = np.array([0.95, 0.08, 0.05], dtype=np.float32)
     r = np.interp(t, stops_t, stops_r).astype(np.float32)
     g = np.interp(t, stops_t, stops_g).astype(np.float32)
     b = np.interp(t, stops_t, stops_b).astype(np.float32)
@@ -371,11 +392,14 @@ class _ToolpathGL(QOpenGLWidget):
 
         # Cached per-point data for color mode switching (no re-parse needed)
         self._pts_n:           Optional[np.ndarray] = None   # (N,3) normalized
-        self._height_colours:  Optional[np.ndarray] = None   # (N,3) float32
-        self._speed_colours:   Optional[np.ndarray] = None   # (N,3) float32
+        self._height_colours:     Optional[np.ndarray] = None   # (N,3) float32
+        self._speed_colours:      Optional[np.ndarray] = None   # (N,3) float32
+        self._extrusion_colours:  Optional[np.ndarray] = None   # (N,3) float32
+        self._extrusion_min:      float = 0.0
+        self._extrusion_max:      float = 0.0
         self._speed_min:       float = 0.0
         self._speed_max:       float = 0.0
-        self._color_mode:      str   = "speed"   # "speed" | "height"
+        self._color_mode:      str   = "speed"   # "speed" | "height" | "extrusion"
 
         self._gl_ready: bool = False
         self._prog:     Optional[QOpenGLShaderProgram]     = None
@@ -519,9 +543,10 @@ class _ToolpathGL(QOpenGLWidget):
 
     # ── Background thread slots ───────────────────────────────────────────────
 
-    @pyqtSlot(object, object, object, object)
+    @pyqtSlot(object, object, object, object, object)
     def _on_loaded(self, pts: np.ndarray, segments: list,
-                   seam_pts: np.ndarray, speeds: np.ndarray):
+                   seam_pts: np.ndarray, speeds: np.ndarray,
+                   extrusions: np.ndarray):
         self._loading = False
         n_segs = len(segments)
         spd_min = float(speeds.min()) if len(speeds) else 0.0
@@ -570,8 +595,24 @@ class _ToolpathGL(QOpenGLWidget):
         t_s = (speeds - spd_min) / max(spd_max - spd_min, 1e-9)
         self._speed_colours = _speed_colormap(t_s)
 
+        # ── Extrusion colour (blue low → green normal → red high) ────────────
+        if len(extrusions) == len(pts):
+            e_min = float(extrusions.min())
+            e_max = float(extrusions.max())
+            self._extrusion_min = e_min
+            self._extrusion_max = e_max
+            t_e = (extrusions - e_min) / max(e_max - e_min, 1e-9)
+            self._extrusion_colours = _extrusion_colormap(t_e)
+        else:
+            self._extrusion_colours = self._speed_colours  # fallback
+
         # Choose colour array based on current mode
-        colours = self._speed_colours if self._color_mode == "speed" else self._height_colours
+        if self._color_mode == "extrusion" and self._extrusion_colours is not None:
+            colours = self._extrusion_colours
+        elif self._color_mode == "speed":
+            colours = self._speed_colours
+        else:
+            colours = self._height_colours
 
         self._pending = np.column_stack(
             [self._pts_n, colours]
@@ -595,11 +636,16 @@ class _ToolpathGL(QOpenGLWidget):
         self.reset_view()
 
     def set_color_mode(self, mode: str) -> None:
-        """Switch between 'speed' and 'height' coloring without re-parsing."""
+        """Switch between 'speed', 'height', and 'extrusion' coloring without re-parsing."""
         self._color_mode = mode
         if self._pts_n is None:
             return
-        colours = self._speed_colours if mode == "speed" else self._height_colours
+        if mode == "extrusion":
+            colours = self._extrusion_colours
+        elif mode == "speed":
+            colours = self._speed_colours
+        else:
+            colours = self._height_colours
         if colours is None:
             return
         self._pending = np.column_stack(
@@ -824,9 +870,11 @@ class _ToolpathGL(QOpenGLWidget):
             painter.setFont(QFont("Helvetica", 10))
             painter.drawText(8, self.height() - 8, self._label)
 
-            # Speed legend (top-right corner, only when colour mode is speed)
+            # Legend (top-right corner)
             if self._color_mode == "speed" and self._speed_max > 0:
                 self._draw_speed_legend(painter)
+            elif self._color_mode == "extrusion" and self._extrusion_max > 0:
+                self._draw_extrusion_legend(painter)
         painter.end()
 
     def _draw_speed_legend(self, painter: QPainter) -> None:
@@ -851,6 +899,27 @@ class _ToolpathGL(QOpenGLWidget):
         painter.drawText(x + bar_w + 4, y + 10,       f"{self._speed_max:.0f} mm/s")
         painter.drawText(x + bar_w + 4, y + bar_h,    f"{self._speed_min:.0f} mm/s")
         painter.drawText(x + bar_w + 4, y + bar_h // 2 + 4, "Speed")
+
+    def _draw_extrusion_legend(self, painter: QPainter) -> None:
+        """Draw a vertical colour bar for extrusion rate (blue→green→red)."""
+        bar_w, bar_h = 12, 80
+        margin = 10
+        x = self.width() - bar_w - margin - 52
+        y = margin + 16
+
+        grad = QLinearGradient(x, y + bar_h, x, y)   # bottom=low, top=high
+        grad.setColorAt(0.00, QColor(20,  46, 242))   # blue  (low/valley)
+        grad.setColorAt(0.50, QColor(13, 234, 20))    # green (normal)
+        grad.setColorAt(1.00, QColor(255, 38, 13))    # red   (high/peak)
+        painter.fillRect(x, y, bar_w, bar_h, grad)
+        painter.setPen(QColor(60, 70, 90))
+        painter.drawRect(x, y, bar_w, bar_h)
+
+        painter.setPen(QColor(190, 200, 220))
+        painter.setFont(QFont("Helvetica", 9))
+        painter.drawText(x + bar_w + 4, y + 10,            "high E")
+        painter.drawText(x + bar_w + 4, y + bar_h // 2 + 4, "Extr.")
+        painter.drawText(x + bar_w + 4, y + bar_h,         "low E")
 
     # ── MVP ───────────────────────────────────────────────────────────────────
 
@@ -989,16 +1058,18 @@ class ToolpathViewer(QWidget):
 
         from PyQt6.QtWidgets import QComboBox as _QCB
         self._colour_combo = _QCB()
-        self._colour_combo.addItems(["Speed", "Height"])
+        self._colour_combo.addItems(["Speed", "Height", "Extrusion"])
         self._colour_combo.setFixedHeight(22)
-        self._colour_combo.setFixedWidth(72)
+        self._colour_combo.setFixedWidth(84)
         self._colour_combo.setStyleSheet(
             "QComboBox { background:#1a1f2a; color:#aac; font-size:10px; border:1px solid #334; }"
             "QComboBox::drop-down { border:none; }"
         )
         self._colour_combo.setToolTip(
-            "Speed: blue (slow) → cyan → green → yellow → red (fast)\n"
-            "Height: blue (bed) → orange (top)"
+            "Speed: green (slow) → cyan → blue (fast)\n"
+            "Height: blue (bed) → orange (top)\n"
+            "Extrusion: blue (low/valley) → green (normal) → red (high/peak)\n"
+            "  Use Extrusion mode to visualise variable extrusion (Layer Ramp feature)"
         )
         self._colour_combo.currentTextChanged.connect(self._on_colour_mode)
         bl.addWidget(self._colour_combo)
@@ -1068,7 +1139,8 @@ class ToolpathViewer(QWidget):
         self._gl.update()
 
     def _on_colour_mode(self, text: str):
-        self._gl.set_color_mode("speed" if text == "Speed" else "height")
+        mode = {"Speed": "speed", "Height": "height", "Extrusion": "extrusion"}.get(text, "speed")
+        self._gl.set_color_mode(mode)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
