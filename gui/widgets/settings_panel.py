@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QSlider, QSizePolicy, QPushButton, QInputDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale, QByteArray
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale, QByteArray, QObject, QEvent
 from PyQt6.QtGui import QPixmap, QPainter
 from PyQt6.QtSvg import QSvgRenderer
 
@@ -38,6 +38,27 @@ SLICER_SETTINGS_PATH = _user_data_dir() / "slicer_settings.json"
 PRESETS_PATH         = _user_data_dir() / "presets.json"
 
 
+# ── Scroll-wheel guard ───────────────────────────────────────────────────────
+
+class _WheelIgnoreFilter(QObject):
+    """Event filter that swallows Wheel events so spinboxes/combos don't change on scroll."""
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Wheel:
+            ev.ignore()
+            return True
+        return super().eventFilter(obj, ev)
+
+_wheel_guard = None   # singleton, created once per process
+
+def _no_scroll(widget) -> None:
+    """Prevent mouse-wheel from changing a spinbox/combo value."""
+    global _wheel_guard
+    if _wheel_guard is None:
+        from PyQt6.QtWidgets import QApplication
+        _wheel_guard = _WheelIgnoreFilter(QApplication.instance())
+    widget.installEventFilter(_wheel_guard)
+
+
 class SettingsPanel(QScrollArea):
     """
     Scrollable panel containing all slicing settings.
@@ -61,6 +82,8 @@ class SettingsPanel(QScrollArea):
 
         self._widgets = {}   # key → widget
         self._building = True
+        self._seam_ramp_row_frames: list = []
+        self._seam_ramp_active: int = 99   # all rows active by default
 
         # Debounce timer — batches rapid changes into one disk write
         self._save_timer = QTimer(self)
@@ -81,6 +104,9 @@ class SettingsPanel(QScrollArea):
 
         layout.addStretch()
         self._building = False
+
+        # Install wheel-ignore filter on every spin/combo in this panel
+        self._apply_wheel_guard()
 
         # Restore last session's values (silently ignore if file missing/corrupt)
         self._load_from_disk()
@@ -318,7 +344,28 @@ class SettingsPanel(QScrollArea):
         self._seam_ramp_rows_layout = QVBoxLayout(self._seam_ramp_rows_widget)
         self._seam_ramp_rows_layout.setSpacing(3)
         self._seam_ramp_rows_layout.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self._seam_ramp_rows_widget)
+
+        # Vertical "active layers" slider (bottom = all layers active)
+        self._seam_ramp_slider = QSlider(Qt.Orientation.Vertical)
+        self._seam_ramp_slider.setInvertedAppearance(True)
+        self._seam_ramp_slider.setRange(1, 2)   # updated in _rebuild_seam_ramp_rows
+        self._seam_ramp_slider.setValue(2)
+        self._seam_ramp_slider.setFixedWidth(22)
+        self._seam_ramp_slider.setToolTip(
+            "Active layers slider.\n"
+            "Bottom = all layers are independently configured.\n"
+            "Drag upward to reduce the active count;\n"
+            "layers beyond the slider position will copy the last active layer's settings."
+        )
+        self._seam_ramp_slider.valueChanged.connect(self._on_seam_ramp_active_changed)
+
+        rows_slider_box = QWidget()
+        rsl = QHBoxLayout(rows_slider_box)
+        rsl.setContentsMargins(0, 0, 0, 0)
+        rsl.setSpacing(4)
+        rsl.addWidget(self._seam_ramp_rows_widget, stretch=1)
+        rsl.addWidget(self._seam_ramp_slider)
+        outer.addWidget(rows_slider_box)
 
         # Connect to layer_alternation (created in _add_wave_group just above)
         self._widgets["layer_alternation"].valueChanged.connect(
@@ -331,21 +378,33 @@ class SettingsPanel(QScrollArea):
     # ── Seam ramp dynamic rows ────────────────────────────────────────────────
 
     def _collect_seam_ramp_layer_data(self) -> list:
-        """Return current per-layer settings as a list of dicts."""
+        """Return current per-layer settings as a list of dicts.
+        Inactive rows (past _seam_ramp_active) copy the last active layer's data."""
         w = self._widgets
+        active = getattr(self, "_seam_ramp_active", 99)
         result = []
+        last_active_data: dict = {}
         n = 1
         while f"seam_ramp_speed_{n}" in w:
-            result.append({
-                "speed_pct":     w[f"seam_ramp_speed_{n}"].value(),
-                "var_extrusion": w[f"seam_ramp_varx_{n}"].isChecked(),
-                "peak_pct":      w[f"seam_ramp_peak_pct_{n}"].value(),
-                "peak_ramp":     w[f"seam_ramp_peak_ramp_{n}"].currentText(),
-                "p2v_rate":      w[f"seam_ramp_p2v_{n}"].value(),
-                "valley_pct":    w[f"seam_ramp_valley_pct_{n}"].value(),
-                "valley_ramp":   w[f"seam_ramp_valley_ramp_{n}"].currentText(),
-                "v2p_rate":      w[f"seam_ramp_v2p_{n}"].value(),
-            })
+            if n <= active:
+                p2v_ramp_w = w.get(f"seam_ramp_p2v_ramp_{n}")
+                v2p_ramp_w = w.get(f"seam_ramp_v2p_ramp_{n}")
+                row_data = {
+                    "speed_pct":     w[f"seam_ramp_speed_{n}"].value(),
+                    "var_extrusion": w[f"seam_ramp_varx_{n}"].isChecked(),
+                    "peak_pct":      w[f"seam_ramp_peak_pct_{n}"].value(),
+                    "peak_ramp":     w[f"seam_ramp_peak_ramp_{n}"].currentText(),
+                    "p2v_rate":      w[f"seam_ramp_p2v_{n}"].value(),
+                    "p2v_ramp":      p2v_ramp_w.currentText() if p2v_ramp_w else "gradual",
+                    "valley_pct":    w[f"seam_ramp_valley_pct_{n}"].value(),
+                    "valley_ramp":   w[f"seam_ramp_valley_ramp_{n}"].currentText(),
+                    "v2p_rate":      w[f"seam_ramp_v2p_{n}"].value(),
+                    "v2p_ramp":      v2p_ramp_w.currentText() if v2p_ramp_w else "gradual",
+                }
+                last_active_data = row_data
+            else:
+                row_data = dict(last_active_data)
+            result.append(row_data)
             n += 1
         return result
 
@@ -367,9 +426,11 @@ class SettingsPanel(QScrollArea):
         _sv(f"seam_ramp_peak_pct_{n}",    vals.get("peak_pct"))
         _sv(f"seam_ramp_peak_ramp_{n}",   vals.get("peak_ramp"))
         _sv(f"seam_ramp_p2v_{n}",         vals.get("p2v_rate"))
+        _sv(f"seam_ramp_p2v_ramp_{n}",    vals.get("p2v_ramp"))
         _sv(f"seam_ramp_valley_pct_{n}",  vals.get("valley_pct"))
         _sv(f"seam_ramp_valley_ramp_{n}", vals.get("valley_ramp"))
         _sv(f"seam_ramp_v2p_{n}",         vals.get("v2p_rate"))
+        _sv(f"seam_ramp_v2p_ramp_{n}",    vals.get("v2p_ramp"))
 
     def _rebuild_seam_ramp_rows(self, count: int) -> None:
         """Rebuild the per-layer rows to match `count` (= layer_alternation)."""
@@ -387,18 +448,55 @@ class SettingsPanel(QScrollArea):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Build new rows
+        # Build new rows, track frames for enable/disable
+        self._seam_ramp_row_frames = []
         defaults = [25, 50, 75, 100]
         for n in range(1, count + 1):
             row = self._make_seam_ramp_row(n, defaults[(n - 1) % 4])
             layout.addWidget(row)
+            self._seam_ramp_row_frames.append(row)
+
+        # Sync slider range — all rows active by default after a rebuild
+        self._seam_ramp_active = count
+        if hasattr(self, "_seam_ramp_slider"):
+            self._seam_ramp_slider.blockSignals(True)
+            self._seam_ramp_slider.setRange(1, count)
+            self._seam_ramp_slider.setValue(count)
+            self._seam_ramp_slider.blockSignals(False)
 
         # Restore saved values where available
         for n, vals in enumerate(old_vals[:count], 1):
             self._restore_seam_ramp_row(n, vals)
 
+        # Apply wheel-ignore filter to freshly created widgets
+        for w in self._seam_ramp_rows_widget.findChildren(
+                (QSpinBox, QDoubleSpinBox, QComboBox)):
+            _no_scroll(w)
+
         if not self._building:
             self._emit()
+
+    def _on_seam_ramp_active_changed(self, k: int) -> None:
+        """Slider moved: update which rows are independently active."""
+        self._seam_ramp_active = k
+        active_style = (
+            "QFrame { border: 1px solid #252a38; border-radius: 3px; background: #0f1018; }"
+        )
+        inactive_style = (
+            "QFrame { border: 1px solid #1c1e28; border-radius: 3px; background: #090a10; }"
+        )
+        for i, frame in enumerate(self._seam_ramp_row_frames):
+            is_active = (i < k)
+            frame.setEnabled(is_active)
+            frame.setStyleSheet(active_style if is_active else inactive_style)
+        if not self._building:
+            self._emit()
+
+    def _apply_wheel_guard(self) -> None:
+        """Install wheel-ignore filter on every spin-box and combo-box in this panel."""
+        container = self.widget()
+        for w in container.findChildren((QSpinBox, QDoubleSpinBox, QComboBox)):
+            _no_scroll(w)
 
     def _make_seam_ramp_row(self, n: int, default_speed: int = 100) -> "QWidget":
         """Create a single collapsible layer ramp row."""
@@ -474,6 +572,7 @@ class SettingsPanel(QScrollArea):
         def _combo(key, items, tip):
             c = QComboBox()
             c.addItems(items)
+            c.setMinimumWidth(90)
             c.setToolTip(tip)
             c.currentIndexChanged.connect(self._emit)
             self._widgets[key] = c
@@ -494,10 +593,14 @@ class SettingsPanel(QScrollArea):
         pk_lbl = QLabel("Peak:"); pk_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
         elay.addRow(pk_lbl, peak_box)
 
+        p2v_box = QWidget(); p2v_box.setStyleSheet(_ss)
+        p2v_bl = QHBoxLayout(p2v_box); p2v_bl.setContentsMargins(0,0,0,0); p2v_bl.setSpacing(4)
+        p2v_bl.addWidget(_spin(f"seam_ramp_p2v_{n}", 0, 500, 100,
+                               "E multiplier while descending from peak toward valley (100 = normal)"))
+        p2v_bl.addWidget(_combo(f"seam_ramp_p2v_ramp_{n}", _ramp_items, _ramp_tip))
+        p2v_bl.addStretch()
         p2v_lbl = QLabel("Peak→Valley:"); p2v_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
-        elay.addRow(p2v_lbl,
-                    _spin(f"seam_ramp_p2v_{n}", 0, 500, 100,
-                          "E multiplier while descending from peak toward valley (100 = normal)"))
+        elay.addRow(p2v_lbl, p2v_box)
 
         # Valley row
         val_box = QWidget(); val_box.setStyleSheet(_ss)
@@ -509,10 +612,14 @@ class SettingsPanel(QScrollArea):
         va_lbl = QLabel("Valley:"); va_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
         elay.addRow(va_lbl, val_box)
 
+        v2p_box = QWidget(); v2p_box.setStyleSheet(_ss)
+        v2p_bl = QHBoxLayout(v2p_box); v2p_bl.setContentsMargins(0,0,0,0); v2p_bl.setSpacing(4)
+        v2p_bl.addWidget(_spin(f"seam_ramp_v2p_{n}", 0, 500, 100,
+                               "E multiplier while ascending from valley toward peak (100 = normal)"))
+        v2p_bl.addWidget(_combo(f"seam_ramp_v2p_ramp_{n}", _ramp_items, _ramp_tip))
+        v2p_bl.addStretch()
         v2p_lbl = QLabel("Valley→Peak:"); v2p_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
-        elay.addRow(v2p_lbl,
-                    _spin(f"seam_ramp_v2p_{n}", 0, 500, 100,
-                          "E multiplier while ascending from valley toward peak (100 = normal)"))
+        elay.addRow(v2p_lbl, v2p_box)
 
         vlay.addWidget(extr)
         varx_chk.toggled.connect(extr.setVisible)
