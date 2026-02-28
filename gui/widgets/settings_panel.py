@@ -321,6 +321,10 @@ class SettingsPanel(QScrollArea):
         self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",      12.0,  0.5, 50.0, 0.5,
                   tip="Maximum plastic flow rate in mm³/s. Limits print speed to prevent under-extrusion.\n"
                       "Your hotend's capability — typically 8–15mm³/s for standard, up to 40+ for high-flow")
+        self._dbl(f, "extrusion_multiplier", "Extrusion rate:",          1.0,  0.5,  2.0, 0.01,
+                  tip="Global extrusion multiplier applied to every E move.\n"
+                      "1.0 = 100% (normal).  0.95 = 5% less, 1.05 = 5% more.\n"
+                      "Use to compensate for over/under extrusion without re-slicing.")
         parent.addWidget(g)
 
     def _add_seam_ramp_group(self, parent):
@@ -637,7 +641,7 @@ class SettingsPanel(QScrollArea):
         # Peak row
         peak_box = QWidget(); peak_box.setStyleSheet(_ss)
         pl = QHBoxLayout(peak_box); pl.setContentsMargins(0,0,0,0); pl.setSpacing(4)
-        pl.addWidget(_spin(f"seam_ramp_peak_pct_{n}", -100, 500, 0,
+        pl.addWidget(_spin(f"seam_ramp_peak_pct_{n}", -100, 3000, 0,
                            "+% extrusion at wave peak (+25 = 1.25× E)"))
         pl.addWidget(_combo(f"seam_ramp_peak_ramp_{n}", _ramp_items,
                             "Curve shape for the extrusion step at the wave peak.\n"
@@ -650,7 +654,7 @@ class SettingsPanel(QScrollArea):
 
         p2v_box = QWidget(); p2v_box.setStyleSheet(_ss)
         p2v_bl = QHBoxLayout(p2v_box); p2v_bl.setContentsMargins(0,0,0,0); p2v_bl.setSpacing(4)
-        p2v_bl.addWidget(_spin(f"seam_ramp_p2v_{n}", 0, 500, 100,
+        p2v_bl.addWidget(_spin(f"seam_ramp_p2v_{n}", 0, 3000, 100,
                                "E multiplier (%) while descending from peak → valley.\n"
                                "100 = normal extrusion on the falling flank."))
         p2v_bl.addWidget(_combo(f"seam_ramp_p2v_ramp_{n}", _ramp_items,
@@ -665,7 +669,7 @@ class SettingsPanel(QScrollArea):
         # Valley row
         val_box = QWidget(); val_box.setStyleSheet(_ss)
         vl = QHBoxLayout(val_box); vl.setContentsMargins(0,0,0,0); vl.setSpacing(4)
-        vl.addWidget(_spin(f"seam_ramp_valley_pct_{n}", -100, 500, 0,
+        vl.addWidget(_spin(f"seam_ramp_valley_pct_{n}", -100, 3000, 0,
                            "+% extrusion at wave valley"))
         vl.addWidget(_combo(f"seam_ramp_valley_ramp_{n}", _ramp_items,
                             "Curve shape for the extrusion step at the wave valley.\n"
@@ -678,7 +682,7 @@ class SettingsPanel(QScrollArea):
 
         v2p_box = QWidget(); v2p_box.setStyleSheet(_ss)
         v2p_bl = QHBoxLayout(v2p_box); v2p_bl.setContentsMargins(0,0,0,0); v2p_bl.setSpacing(4)
-        v2p_bl.addWidget(_spin(f"seam_ramp_v2p_{n}", 0, 500, 100,
+        v2p_bl.addWidget(_spin(f"seam_ramp_v2p_{n}", 0, 3000, 100,
                                "E multiplier (%) while rising from valley → peak.\n"
                                "100 = normal extrusion on the rising flank."))
         v2p_bl.addWidget(_combo(f"seam_ramp_v2p_ramp_{n}", _ramp_items,
@@ -998,6 +1002,7 @@ class SettingsPanel(QScrollArea):
             "travel_speed":           w["travel_speed"].value(),
             "fan_speed":              w["fan_speed"].value(),
             "max_volumetric_speed":   w["max_volumetric_speed"].value(),
+            "extrusion_multiplier":   w["extrusion_multiplier"].value(),
             "print_accel":            w["print_accel"].value(),
             "travel_accel":           w["travel_accel"].value(),
             "z_hop":                  w["z_hop"].value(),
@@ -1056,6 +1061,7 @@ class SettingsPanel(QScrollArea):
             _set_int("travel_speed",             ps.get("travel_speed"))
             _set_int("fan_speed",                ps.get("fan_speed"))
             _set_dbl("max_volumetric_speed",     ps.get("max_volumetric_speed"))
+            _set_dbl("extrusion_multiplier",     ps.get("extrusion_multiplier"))
             _set_int("print_accel",              ps.get("print_accel"))
             _set_int("travel_accel",             ps.get("travel_accel"))
             _set_dbl("z_hop",                    ps.get("z_hop"))

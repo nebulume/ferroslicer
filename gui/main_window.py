@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QProgressBar, QFileDialog, QStatusBar,
     QMessageBox, QTabWidget, QFrame, QTextEdit,
 )
-from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, pyqtSlot, pyqtSignal, QObject, QPoint
+from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, pyqtSlot, pyqtSignal, QObject, QPoint, QThread
 from PyQt6.QtGui import (
     QAction, QFont, QKeySequence, QColor, QTextCursor,
     QDrag, QPixmap, QPainter,
@@ -41,6 +41,7 @@ from gui.workers.slicer_worker   import SlicerWorker
 from gui.dialogs.app_settings    import AppSettingsDialog, load_app_settings, save_app_settings, get_active_profile
 from gui.dialogs.print_history   import PrintHistoryDialog
 from gui.dialogs.gcode_library   import GCodeLibraryDialog
+from gui.dialogs.test_layer_dialog import TestLayerDialog
 import db.print_db as pdb
 
 
@@ -60,6 +61,80 @@ class _QtLogHandler(logging.Handler):
             self.signaller.record.emit(record.levelname, self.format(record))
         except Exception:
             pass
+
+
+# ── Klipper background poller ────────────────────────────────────────────────
+
+class _KlipperPoller(QThread):
+    """Polls Moonraker on a background thread so the main thread never blocks."""
+    status_ready = pyqtSignal(dict)
+
+    _OFFLINE = {
+        "state": "offline", "progress": 0.0,
+        "nozzle_temp": 0.0, "nozzle_target": 0.0,
+        "bed_temp": 0.0,    "bed_target": 0.0,
+        "print_duration": 0.0, "filename": "",
+    }
+
+    def __init__(self, ip: str, port: int, parent=None):
+        super().__init__(parent)
+        self._ip   = ip
+        self._port = int(port)
+
+    @staticmethod
+    def _log(msg: str):
+        """Write to ~/ferroslicer_debug.log (visible even from .app bundle)."""
+        import os, datetime
+        log = os.path.expanduser("~/ferroslicer_debug.log")
+        ts  = datetime.datetime.now().strftime("%H:%M:%S")
+        try:
+            with open(log, "a") as f:
+                f.write(f"{ts}  {msg}\n")
+        except Exception:
+            pass
+
+    def run(self):
+        import traceback
+        rs = dict(self._OFFLINE)
+        try:
+            import requests as _rq
+            from klipper.moonraker import MoonrakerClient
+            client = MoonrakerClient(self._ip, self._port)
+            base   = client._base
+            self._log(f"polling {base}")
+
+            # Try several endpoints in priority order; capture the real error.
+            _err = ""
+            _connected = False
+            for _path in ("/printer/info", "/api/version", "/server/info"):
+                try:
+                    _r = _rq.get(f"{base}{_path}", timeout=5.0)
+                    # Accept any 2xx/3xx as "reachable"
+                    if _r.status_code < 500:
+                        _connected = True
+                        break
+                    _err = f"HTTP {_r.status_code} on {base}{_path}"
+                except Exception as _e:
+                    _err = f"{type(_e).__name__}: {_e}  [{base}{_path}]"
+
+            self._log(f"connected={_connected}  err={_err!r}")
+
+            if not _connected:
+                rs["_error"] = _err or "no response on /printer/info, /api/version, /server/info"
+                self.status_ready.emit(rs)
+                return
+
+            rs = client.get_rich_status()
+            if rs.get("state") == "unknown":
+                rs["state"] = "standby"
+            rs["_error"] = ""
+
+        except Exception:
+            tb = traceback.format_exc()
+            rs["_error"] = tb
+            self._log(f"exception: {tb}")
+
+        self.status_ready.emit(rs)
 
 
 # ── Draggable GCode chip ──────────────────────────────────────────────────────
@@ -165,6 +240,7 @@ class MainWindow(QMainWindow):
         self._app_settings: dict = load_app_settings()
         self._slicer_worker: SlicerWorker = None
         self._last_generated_settings: str = ""   # JSON snapshot of settings at last gen
+        self._klipper_poller: _KlipperPoller = None  # background poll thread
         self._klipper_timer = QTimer(self)
         self._klipper_timer.setInterval(5000)
         self._klipper_timer.timeout.connect(self._poll_klipper)
@@ -299,6 +375,17 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background: #354a66; }"
         )
 
+        self.test_layer_btn = QPushButton("⬜  Test First Layer")
+        self.test_layer_btn.setFixedHeight(36)
+        self.test_layer_btn.setToolTip(
+            "Generate a 30×30 mm single-layer test square for first-layer adhesion calibration"
+        )
+        self.test_layer_btn.clicked.connect(self._open_test_layer)
+        self.test_layer_btn.setStyleSheet(
+            "QPushButton { background: #2a3a52; color: #ccd; border-radius: 4px; }"
+            "QPushButton:hover { background: #354a66; }"
+        )
+
         self.generate_btn = QPushButton("▶  Generate GCode")
         self.generate_btn.setFixedHeight(36)
         self.generate_btn.setEnabled(False)
@@ -349,6 +436,7 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.load_btn)
         tb_layout.addWidget(self.settings_btn)
         tb_layout.addWidget(self.library_btn)
+        tb_layout.addWidget(self.test_layer_btn)
         tb_layout.addStretch()
         tb_layout.addWidget(self.progress_label)
         tb_layout.addWidget(self.generate_btn)
@@ -658,13 +746,20 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _poll_klipper(self):
+        """Start a background poll — never block the main thread."""
+        if self._klipper_poller and self._klipper_poller.isRunning():
+            return   # previous poll still in flight, skip
         profile = get_active_profile(self._app_settings)
-        ip   = profile.get("printer_ip", "192.168.1.65")
-        port = profile.get("printer_port", 80)
-        from klipper.moonraker import MoonrakerClient
-        client = MoonrakerClient(ip, port)
+        ip   = profile.get("printer_ip",   "192.168.1.65")
+        port = int(profile.get("printer_port", 80))
+        self._klipper_poller = _KlipperPoller(ip, port, parent=self)
+        self._klipper_poller.status_ready.connect(self._on_klipper_status)
+        self._klipper_poller.start()
 
-        rs = client.get_rich_status()
+    def _on_klipper_status(self, rs: dict):
+        profile = get_active_profile(self._app_settings)
+        ip    = profile.get("printer_ip", "192.168.1.65")
+        port  = int(profile.get("printer_port", 80))
         state = rs["state"]
 
         def _temp(cur, tgt):
@@ -683,13 +778,23 @@ class MainWindow(QMainWindow):
         bed    = _temp(rs["bed_temp"],    rs["bed_target"])
         temps  = f"N:{nozzle} B:{bed}"
 
-        if state == "unknown":
-            self.status_klipper_lbl.setText(f"Klipper: {ip} offline")
+        if state in ("unknown", "offline"):
+            self.status_klipper_lbl.setText(f"Klipper: {ip} — offline")
             self.status_klipper_lbl.setStyleSheet("color: #e74c3c;")
+            err = rs.get("_error", "")
+            tip = f"Cannot reach Moonraker at {ip} (port {port})"
+            if err:
+                tip += f"\n\nError: {err}"
+            tip += (
+                "\n\nCheck: printer power, IP, nginx config."
+                "\nmacOS: System Settings → Privacy & Security → Local Network"
+                "\n       → enable FerroSlicer"
+            )
+            self.status_klipper_lbl.setToolTip(tip)
         elif state in ("printing", "paused"):
-            pct  = int(rs["progress"] * 100)
+            pct     = int(rs["progress"] * 100)
             elapsed = _elapsed(rs["print_duration"])
-            prefix = "printing" if state == "printing" else "⏸ paused"
+            prefix  = "printing" if state == "printing" else "⏸ paused"
             self.status_klipper_lbl.setText(
                 f"Klipper: {prefix} {pct}% · {temps} · {elapsed}"
             )
@@ -698,11 +803,10 @@ class MainWindow(QMainWindow):
         elif state == "complete":
             self.status_klipper_lbl.setText(f"Klipper: complete ✓ · {temps}")
             self.status_klipper_lbl.setStyleSheet("color: #2ecc71;")
-        elif state in ("error",):
+        elif state == "error":
             self.status_klipper_lbl.setText(f"Klipper: error · {temps}")
             self.status_klipper_lbl.setStyleSheet("color: #e74c3c;")
         else:
-            # standby / idle
             self.status_klipper_lbl.setText(f"Klipper: idle · {temps}")
             self.status_klipper_lbl.setStyleSheet("color: #aaa;")
 
@@ -724,6 +828,26 @@ class MainWindow(QMainWindow):
         dlg = GCodeLibraryDialog(self)
         dlg.settings_loaded.connect(self.settings_panel.load_config)
         dlg.exec()
+
+    def _open_test_layer(self):
+        profile     = get_active_profile(self._app_settings)
+        custom_gc   = {
+            "start_gcode": profile.get("start_gcode", ""),
+            "end_gcode":   profile.get("end_gcode",   ""),
+        }
+        cfg = self.settings_panel.get_config_overrides()
+        cfg["printer_profile"] = profile
+        dlg = TestLayerDialog(cfg, custom_gc, self._app_settings, parent=self)
+        dlg.gcode_ready.connect(self._on_test_layer_ready)
+        dlg.exec()
+
+    def _on_test_layer_ready(self, path: str):
+        """Load the test layer GCode into the toolpath viewer."""
+        self._gcode_path = path
+        self._gcode_chip.set_path(path)
+        self.reveal_btn.setEnabled(True)
+        self.send_btn.setEnabled(True)
+        self._start_toolpath_preview()
 
     def _open_history(self):
         dlg = PrintHistoryDialog(self)

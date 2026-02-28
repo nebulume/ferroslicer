@@ -198,10 +198,17 @@ class GCodeLoaderThread(QThread):
                             cur_f = nf
                         xs.append(nx); ys.append(ny); zs.append(nz)
                         spds.append(cur_f / 60.0)   # mm/min → mm/s
-                        # Extrusion rate: filament mm per XY-travel mm
-                        delta_e = ne if relative_e else (ne - cur_e)
-                        move_xy = math.hypot(nx - cur_x, ny - cur_y)
-                        erates.append(delta_e / max(move_xy, 1e-6))
+                        # Extrusion rate: filament mm per 3-D travel mm.
+                        # Must use 3-D distance (not just XY) because the generator
+                        # computes E = seg_len_3D * e_factor.  Using XY only would
+                        # introduce spurious variation at wave peaks where Z/XY ratio
+                        # shifts — making constant-E prints look like they have
+                        # variable extrusion.
+                        delta_e  = ne if relative_e else (ne - cur_e)
+                        move_3d  = math.sqrt(
+                            (nx - cur_x)**2 + (ny - cur_y)**2 + (nz - cur_z)**2
+                        )
+                        erates.append(delta_e / max(move_3d, 1e-6))
                     elif has_xy:
                         had_travel = True
 
@@ -596,12 +603,15 @@ class _ToolpathGL(QOpenGLWidget):
         self._speed_colours = _speed_colormap(t_s)
 
         # ── Extrusion colour (blue low → green normal → red high) ────────────
+        # Clip at p2/p98 so outlier short-move spikes don't dominate the range.
         if len(extrusions) == len(pts):
-            e_min = float(extrusions.min())
-            e_max = float(extrusions.max())
-            self._extrusion_min = e_min
-            self._extrusion_max = e_max
-            t_e = (extrusions - e_min) / max(e_max - e_min, 1e-9)
+            e_lo = float(np.percentile(extrusions, 2))
+            e_hi = float(np.percentile(extrusions, 98))
+            if e_hi <= e_lo:
+                e_hi = e_lo + 1e-9
+            self._extrusion_min = e_lo
+            self._extrusion_max = e_hi
+            t_e = np.clip((extrusions - e_lo) / (e_hi - e_lo), 0.0, 1.0)
             self._extrusion_colours = _extrusion_colormap(t_e)
         else:
             self._extrusion_colours = self._speed_colours  # fallback
@@ -904,7 +914,7 @@ class _ToolpathGL(QOpenGLWidget):
         """Draw a vertical colour bar for extrusion rate (blue→green→red)."""
         bar_w, bar_h = 12, 80
         margin = 10
-        x = self.width() - bar_w - margin - 52
+        x = self.width() - bar_w - margin - 58
         y = margin + 16
 
         grad = QLinearGradient(x, y + bar_h, x, y)   # bottom=low, top=high
@@ -917,9 +927,22 @@ class _ToolpathGL(QOpenGLWidget):
 
         painter.setPen(QColor(190, 200, 220))
         painter.setFont(QFont("Helvetica", 9))
-        painter.drawText(x + bar_w + 4, y + 10,            "high E")
-        painter.drawText(x + bar_w + 4, y + bar_h // 2 + 4, "Extr.")
-        painter.drawText(x + bar_w + 4, y + bar_h,         "low E")
+        e_range = self._extrusion_max - self._extrusion_min
+        flat = e_range < self._extrusion_min * 0.02   # < 2 % relative variation
+        def _efmt(v: float) -> str:
+            if v == 0: return "0"
+            if v < 0.001: return f"{v:.2e}"
+            if v < 0.01:  return f"{v:.5f}"
+            if v < 0.1:   return f"{v:.4f}"
+            return f"{v:.3f}"
+        if flat:
+            painter.drawText(x + bar_w + 4, y + 10,             "flat E")
+            painter.drawText(x + bar_w + 4, y + bar_h // 2 + 4, _efmt(self._extrusion_max))
+            painter.drawText(x + bar_w + 4, y + bar_h,          "(no var)")
+        else:
+            painter.drawText(x + bar_w + 4, y + 10,             _efmt(self._extrusion_max))
+            painter.drawText(x + bar_w + 4, y + bar_h // 2 + 4, "E/mm")
+            painter.drawText(x + bar_w + 4, y + bar_h,          _efmt(self._extrusion_min))
 
     # ── MVP ───────────────────────────────────────────────────────────────────
 

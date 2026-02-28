@@ -59,7 +59,10 @@ class GCodeGenerator:
         layer_alternation: int = 2,     # from mesh_settings
         seam_revolution_offset: float = 0.0,  # phase offset from seam_position setting
         seam_cycle_len: float = 0.0,    # alternation cycle length in revolutions (0 = use layer_alternation)
+        extrusion_multiplier: float = 1.0,  # global E scale applied to every move
         waves_per_rev: float = 0.0,     # waves per revolution (for variable extrusion phase)
+        wave_phase_offset: float = 0.0, # per-revolution phase offset (phase_offset/100); mirrors Rust spiral generator
+        base_ramp_z: float = 0.0,       # z below which speed ramp + var-extrusion are suppressed (base integrity region)
         # ── Skirt ─────────────────────────────────────────────────────────────
         skirt_loops: int = 1,           # number of concentric skirt loops side-by-side
     ):
@@ -100,7 +103,10 @@ class GCodeGenerator:
         self.layer_alternation        = max(1, int(layer_alternation))
         self.seam_revolution_offset   = float(seam_revolution_offset)
         self.seam_cycle_len           = float(seam_cycle_len) if seam_cycle_len > 0 else float(layer_alternation)
+        self.extrusion_multiplier     = max(0.01, float(extrusion_multiplier))
         self.waves_per_rev            = float(waves_per_rev)
+        self.wave_phase_offset        = float(wave_phase_offset)
+        self.base_ramp_z              = float(base_ramp_z)
         self.skirt_loops              = max(1, int(skirt_loops))
 
         # Calculated values
@@ -199,12 +205,13 @@ class GCodeGenerator:
                 first_target = Vector3(xs[0] + ox, ys[0] + oy, zs[0] + oz)
                 self._add_move(first_target, extrusion_amount=0.0, is_travel=True)
 
-                # Pre-compute extrusion factor (constant per segment)
-                e_factor = (lh * ew) / fcs
+                # Pre-compute extrusion factor (constant per segment, scaled by global multiplier)
+                e_factor = (lh * ew) / fcs * self.extrusion_multiplier
 
-                # First-layer speed: slow down everything within the first layer height
-                z_base           = float(zs[0])
-                first_layer_z_thresh = z_base + lh   # anything at/below this is "first layer"
+                # First-layer speed: slow down the first spiral revolution only.
+                # Using revolution count (< 1.0) rather than Z avoids the boundary
+                # overlap where the second revolution's first point also fell at
+                # exactly z_base + lh and got slow speed incorrectly.
                 spd_f_first = int(spd * self.first_layer_speed_pct / 100.0 * 60)
 
                 # Revolution-based speed ramp — resets exactly at the seam.
@@ -243,7 +250,13 @@ class GCodeGenerator:
                     if not ld.get("var_extrusion"):
                         return 1.0
                     # Normalized sine displacement: -1=valley, +1=peak
-                    wave_phase = (rev_val * self.waves_per_rev) % 1.0
+                    # Mirror Rust: cycle = floor((rev + seam_off) / cycle_len),
+                    # shift toggles between 0 and wave_phase_offset each cycle.
+                    _frac      = rev_val - int(rev_val)
+                    _adj_rev   = rev_val + _seam_off
+                    _cycle_idx = int(_adj_rev / _cycle_len) if _cycle_len > 0 else 0
+                    _cur_shift = (_cycle_idx % 2) * self.wave_phase_offset
+                    wave_phase = (_frac * self.waves_per_rev + _cur_shift) % 1.0
                     d = math.sin(_TWO_PI * wave_phase)
                     if d >= 0:  # positive half: near peak
                         base_e  = ld.get("v2p_rate", 100) / 100.0
@@ -281,8 +294,11 @@ class GCodeGenerator:
                     if seg_len > 0.001:
                         _rev_val = float(revs[i])
                         extrusion = seg_len * e_factor
-                        if zs[i] <= first_layer_z_thresh:
+                        if _rev_val < 1.0:
                             f_val = spd_f_first
+                        elif zs[i] <= self.base_ramp_z:
+                            # Inside base integrity region — full speed, no ramp, no varx
+                            f_val = spd_f
                         else:
                             # Position within cycle: same formula as Rust wave phase logic
                             _pos = int((_rev_val + _seam_off) % _cycle_len)
@@ -577,6 +593,7 @@ class GCodeGenerator:
                 self.gcode_lines.append("; Unretract before skirt")
                 self.gcode_lines.append(self._unretract())
 
+            skirt_speed = self.print_speed * self.first_layer_speed_pct / 100.0
             for i in range(1, len(skirt_points)):
                 prev_point = skirt_points[i - 1]
                 curr_point = skirt_points[i]
@@ -585,7 +602,8 @@ class GCodeGenerator:
                     (curr_point.y - prev_point.y) ** 2 +
                     (curr_point.z - prev_point.z) ** 2
                 )
-                self._add_move(curr_point, extrusion_amount=seg_len * skirt_e_factor)
+                self._add_move(curr_point, extrusion_amount=seg_len * skirt_e_factor,
+                               speed_override=skirt_speed)
 
         self.gcode_lines.append("; Retract after skirt")
         self.gcode_lines.append(self._retract())
@@ -745,7 +763,8 @@ class GCodeGenerator:
         self,
         target: Vector3,
         extrusion_amount: float = 0.0,
-        is_travel: bool = False
+        is_travel: bool = False,
+        speed_override: float = 0.0,   # mm/s; if > 0, overrides the normal speed selection
     ) -> None:
         """
         Add G1 movement command.
@@ -754,9 +773,12 @@ class GCodeGenerator:
             target: Target position
             extrusion_amount: Extrusion amount in mm (0 = no extrusion)
             is_travel: If True, use travel speed
+            speed_override: Optional speed in mm/s that overrides normal selection (e.g. first-layer speed)
         """
         # Calculate speed respecting volumetric limit
-        if is_travel or extrusion_amount == 0:
+        if speed_override > 0:
+            speed = speed_override
+        elif is_travel or extrusion_amount == 0:
             speed = self.travel_speed
         else:
             speed = self.print_speed
@@ -876,8 +898,7 @@ class GCodeGenerator:
             return 0.0
 
         extrusion = (path_length * self.layer_height * self.extrusion_width) / self.filament_cross_section
-
-        return extrusion
+        return extrusion * self.extrusion_multiplier
 
     def _calculate_total_path_length(self, wave_points_by_layer: List[List[WavePoint]]) -> float:
         """Calculate total path length for estimation."""

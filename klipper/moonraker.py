@@ -20,12 +20,39 @@ class MoonrakerClient:
         self._base = f"http://{host}:{port}" if port != 80 else f"http://{host}"
 
     def _get(self, path: str, timeout: float = 5.0) -> Optional[Dict]:
+        url = f"{self._base}{path}"
+        # Primary: requests
         try:
             import requests
-            r = requests.get(f"{self._base}{path}", timeout=timeout)
+            r = requests.get(url, timeout=timeout)
             r.raise_for_status()
             return r.json()
-        except Exception as e:
+        except Exception as _primary_exc:
+            # On macOS, Python sockets can be blocked by Local Network privacy before
+            # the user has granted permission.  Fall back to the system curl binary
+            # (which lives outside the app bundle and has its own network entitlements).
+            import errno as _errno, os as _os
+            _no_route = (
+                hasattr(_primary_exc, "errno") and _primary_exc.errno == _errno.EHOSTUNREACH
+            )
+            _nested = (
+                hasattr(_primary_exc, "__context__") and
+                hasattr(getattr(_primary_exc, "__context__", None), "errno") and
+                getattr(_primary_exc.__context__, "errno", None) == _errno.EHOSTUNREACH
+            )
+            if not (_no_route or _nested or "No route to host" in str(_primary_exc)):
+                return None  # non-routing error — don't try curl
+            try:
+                import subprocess, json as _json
+                result = subprocess.run(
+                    ["/usr/bin/curl", "-s", "--max-time", str(int(timeout)),
+                     "--connect-timeout", "5", url],
+                    capture_output=True, text=True, timeout=int(timeout) + 2,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return _json.loads(result.stdout)
+            except Exception:
+                pass
             return None
 
     def _post(self, path: str, data=None, files=None, timeout: float = 30.0) -> Optional[Dict]:
