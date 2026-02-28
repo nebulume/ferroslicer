@@ -1075,18 +1075,14 @@ class ToolpathViewer(QWidget):
         sep2.setStyleSheet("color: #334;")
         bl.addWidget(sep2)
 
-        colour_lbl = QLabel("Colour:")
-        colour_lbl.setStyleSheet("color: #779; font-size: 11px;")
-        bl.addWidget(colour_lbl)
-
         from PyQt6.QtWidgets import QComboBox as _QCB
         self._colour_combo = _QCB()
         self._colour_combo.addItems(["Speed", "Height", "Extrusion"])
         self._colour_combo.setFixedHeight(22)
-        self._colour_combo.setFixedWidth(84)
+        self._colour_combo.setFixedWidth(100)
         self._colour_combo.setStyleSheet(
-            "QComboBox { background:#1a1f2a; color:#aac; font-size:10px; border:1px solid #334; }"
-            "QComboBox::drop-down { border:none; }"
+            "QComboBox { background:#1a1f2a; color:#aac; font-size:10px; border:1px solid #334; padding-left:3px; }"
+            "QComboBox::drop-down { border:none; width:16px; }"
         )
         self._colour_combo.setToolTip(
             "Speed: green (slow) → cyan → blue (fast)\n"

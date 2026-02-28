@@ -578,7 +578,7 @@ class SettingsPanel(QScrollArea):
         speed_spin.setRange(1, 200)
         speed_spin.setValue(default_speed)
         speed_spin.setSuffix(" %")
-        speed_spin.setFixedWidth(64)
+        speed_spin.setFixedWidth(72)
         speed_spin.setToolTip(f"Print speed for layer {n} as % of base print speed")
         speed_spin.valueChanged.connect(self._emit)
         self._widgets[f"seam_ramp_speed_{n}"] = speed_spin
@@ -615,7 +615,7 @@ class SettingsPanel(QScrollArea):
         elay.setSpacing(3)
         elay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        def _spin(key, lo, hi, default, tip, suffix=" %", width=62):
+        def _spin(key, lo, hi, default, tip, suffix=" %", width=70):
             s = QSpinBox()
             s.setRange(lo, hi)
             s.setValue(default)
