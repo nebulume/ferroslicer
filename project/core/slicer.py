@@ -257,6 +257,20 @@ class MeshVaseSlicer:
         logger.info("Generating GCode...")
         pr  = merged_config["printer"]
         ps  = merged_config["print_settings"]
+        ms  = merged_config["mesh_settings"]
+
+        # Compute waves_per_rev early — needed by both vase and layer-mesh paths
+        # for the variable-extrusion E multiplier.
+        _wc = ms.get("wave_count")
+        _ws = ms.get("wave_spacing")
+        if _wc:
+            _waves_per_rev = float(_wc)
+        elif _ws and _ws > 0 and analyzer.layers:
+            _avg_perim = analyzer.layers[0].calculate_perimeter_length()
+            _waves_per_rev = _avg_perim / _ws if _avg_perim > 0 else 0.0
+        else:
+            _waves_per_rev = 0.0
+
         gcode_gen = GCodeGenerator(
             nozzle_diameter=pr["nozzle_diameter"],
             layer_height=ps["layer_height"],
@@ -284,6 +298,11 @@ class MeshVaseSlicer:
             travel_accel=ps.get("travel_accel", 1500),
             z_hop=ps.get("z_hop", 0.0),
             first_layer_speed_pct=ps.get("first_layer_speed_pct", 50),
+            seam_ramp_enabled=ps.get("seam_ramp_enabled", False),
+            seam_ramp_layers=ps.get("seam_ramp_layers", []),
+            seam_ramp_pcts=ps.get("seam_ramp_pcts", []),
+            layer_alternation=ms.get("layer_alternation", 2),
+            waves_per_rev=_waves_per_rev,
         )
 
         # If vase mode (spiral) requested, build continuous spiral path

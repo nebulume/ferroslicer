@@ -99,6 +99,18 @@ class SlicerWorker(QThread):
             ms = merged["mesh_settings"]
             ps = merged["print_settings"]
 
+            # Pre-compute waves_per_rev so GCodeGenerator can use it for variable
+            # extrusion phase modulation (_varx_on requires waves_per_rev > 0).
+            _wc = ms.get("wave_count")
+            _ws = ms.get("wave_spacing")
+            if _wc:
+                _waves_per_rev_pre = float(_wc)
+            elif _ws and _ws > 0 and analyzer.layers:
+                _avg_p = analyzer.layers[0].calculate_perimeter_length()
+                _waves_per_rev_pre = _avg_p / _ws if _avg_p > 0 else 0.0
+            else:
+                _waves_per_rev_pre = 0.0
+
             wave_gen = WaveGenerator(
                 amplitude=ms["wave_amplitude"],
                 spacing=ms["wave_spacing"],
@@ -142,13 +154,18 @@ class SlicerWorker(QThread):
                 start_gcode_override=merged.get("custom_gcode", {}).get("start_gcode", ""),
                 end_gcode_override=merged.get("custom_gcode", {}).get("end_gcode", ""),
                 first_layer_squish=ps.get("first_layer_squish", 15.0),
+                extrusion_multiplier=ps.get("extrusion_multiplier", 1.0),
                 first_layer_speed_pct=ps.get("first_layer_speed_pct", 50),
                 firmware=merged.get("printer_profile", {}).get("firmware", "klipper"),
                 retract_dist=merged.get("printer_profile", {}).get("retract_dist", 0.8),
                 retract_speed=merged.get("printer_profile", {}).get("retract_speed", 40.0),
                 seam_ramp_enabled=ps.get("seam_ramp_enabled", False),
                 seam_ramp_pcts=ps.get("seam_ramp_pcts", [25, 50, 75, 100]),
+                seam_ramp_layers=ps.get("seam_ramp_layers", []),
                 layer_alternation=ms.get("layer_alternation", 2),
+                waves_per_rev=_waves_per_rev_pre,
+                wave_phase_offset=ms.get("phase_offset", 50) / 100.0,
+                base_ramp_z=ms.get("base_height", 0.0),
                 skirt_loops=ps.get("skirt_loops", 1),
             )
 

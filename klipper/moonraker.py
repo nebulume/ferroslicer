@@ -20,12 +20,39 @@ class MoonrakerClient:
         self._base = f"http://{host}:{port}" if port != 80 else f"http://{host}"
 
     def _get(self, path: str, timeout: float = 5.0) -> Optional[Dict]:
+        url = f"{self._base}{path}"
+        # Primary: requests
         try:
             import requests
-            r = requests.get(f"{self._base}{path}", timeout=timeout)
+            r = requests.get(url, timeout=timeout)
             r.raise_for_status()
             return r.json()
-        except Exception as e:
+        except Exception as _primary_exc:
+            # On macOS, Python sockets can be blocked by Local Network privacy before
+            # the user has granted permission.  Fall back to the system curl binary
+            # (which lives outside the app bundle and has its own network entitlements).
+            import errno as _errno, os as _os
+            _no_route = (
+                hasattr(_primary_exc, "errno") and _primary_exc.errno == _errno.EHOSTUNREACH
+            )
+            _nested = (
+                hasattr(_primary_exc, "__context__") and
+                hasattr(getattr(_primary_exc, "__context__", None), "errno") and
+                getattr(_primary_exc.__context__, "errno", None) == _errno.EHOSTUNREACH
+            )
+            if not (_no_route or _nested or "No route to host" in str(_primary_exc)):
+                return None  # non-routing error — don't try curl
+            try:
+                import subprocess, json as _json
+                result = subprocess.run(
+                    ["/usr/bin/curl", "-s", "--max-time", str(int(timeout)),
+                     "--connect-timeout", "5", url],
+                    capture_output=True, text=True, timeout=int(timeout) + 2,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return _json.loads(result.stdout)
+            except Exception:
+                pass
             return None
 
     def _post(self, path: str, data=None, files=None, timeout: float = 30.0) -> Optional[Dict]:
@@ -57,9 +84,10 @@ class MoonrakerClient:
         return result is not None
 
     def get_printer_status(self) -> Dict[str, Any]:
-        """Return printer objects including print_stats."""
+        """Return printer objects including print_stats and virtual_sdcard."""
         result = self._get(
-            "/printer/objects/query?print_stats&toolhead&heater_bed&extruder"
+            "/printer/objects/query"
+            "?print_stats&virtual_sdcard&display_status&toolhead&heater_bed&extruder"
         )
         if result and "result" in result:
             return result["result"].get("status", {})
@@ -97,6 +125,12 @@ class MoonrakerClient:
         result = self._post(f"/printer/print/start?filename={filename}")
         return result is not None
 
+    def set_temperatures(self, nozzle_c: float, bed_c: float) -> bool:
+        """Set nozzle and bed target temperatures without waiting (M104 + M140)."""
+        script = f"M104 S{int(nozzle_c)}\nM140 S{int(bed_c)}"
+        result = self._post("/printer/gcode/script", data={"script": script})
+        return result is not None
+
     def cancel_print(self) -> bool:
         result = self._post("/printer/print/cancel")
         return result is not None
@@ -116,11 +150,50 @@ class MoonrakerClient:
         return ps.get("state", "unknown")
 
     def get_progress(self) -> float:
-        """Returns print progress 0.0-1.0, or 0 if not printing."""
+        """Returns print progress 0.0-1.0 from virtual_sdcard file position."""
         status = self.get_printer_status()
-        ps = status.get("print_stats", {})
-        total = ps.get("total_duration", 0)
-        done = ps.get("print_duration", 0)
-        if total > 0:
-            return min(1.0, done / total)
+        # virtual_sdcard.progress is the authoritative GCode file-position percentage
+        vsd = status.get("virtual_sdcard", {})
+        prog = vsd.get("progress", None)
+        if prog is not None:
+            return float(prog)
+        # Fallback: display_status.progress (set by M73 in GCode)
+        ds = status.get("display_status", {})
+        prog = ds.get("progress", None)
+        if prog is not None:
+            return float(prog)
         return 0.0
+
+    def get_rich_status(self) -> Dict[str, Any]:
+        """Return a single-call status dict with progress, temps, state, and elapsed time.
+
+        Keys returned:
+            state (str)        — printing / paused / complete / standby / error / unknown
+            progress (float)   — 0.0–1.0 from virtual_sdcard file position
+            nozzle_temp (float)
+            nozzle_target (float)
+            bed_temp (float)
+            bed_target (float)
+            print_duration (float) — seconds actively printing (excludes pauses)
+            filename (str)
+        """
+        status = self.get_printer_status()
+        ps  = status.get("print_stats", {})
+        vsd = status.get("virtual_sdcard", {})
+        ds  = status.get("display_status", {})
+        ext = status.get("extruder", {})
+        bed = status.get("heater_bed", {})
+
+        # Progress: virtual_sdcard is most accurate; fall back to display_status
+        progress = float(vsd.get("progress") or ds.get("progress") or 0.0)
+
+        return {
+            "state":          ps.get("state", "unknown"),
+            "progress":       progress,
+            "nozzle_temp":    float(ext.get("temperature", 0)),
+            "nozzle_target":  float(ext.get("target", 0)),
+            "bed_temp":       float(bed.get("temperature", 0)),
+            "bed_target":     float(bed.get("target", 0)),
+            "print_duration": float(ps.get("print_duration", 0)),
+            "filename":       ps.get("filename", ""),
+        }

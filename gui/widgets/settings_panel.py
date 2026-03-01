@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QSlider, QSizePolicy, QPushButton, QInputDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale, QByteArray
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QLocale, QByteArray, QObject, QEvent
 from PyQt6.QtGui import QPixmap, QPainter
 from PyQt6.QtSvg import QSvgRenderer
 
@@ -38,6 +38,27 @@ SLICER_SETTINGS_PATH = _user_data_dir() / "slicer_settings.json"
 PRESETS_PATH         = _user_data_dir() / "presets.json"
 
 
+# ── Scroll-wheel guard ───────────────────────────────────────────────────────
+
+class _WheelIgnoreFilter(QObject):
+    """Event filter that swallows Wheel events so spinboxes/combos don't change on scroll."""
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Wheel:
+            ev.ignore()
+            return True
+        return super().eventFilter(obj, ev)
+
+_wheel_guard = None   # singleton, created once per process
+
+def _no_scroll(widget) -> None:
+    """Prevent mouse-wheel from changing a spinbox/combo value."""
+    global _wheel_guard
+    if _wheel_guard is None:
+        from PyQt6.QtWidgets import QApplication
+        _wheel_guard = _WheelIgnoreFilter(QApplication.instance())
+    widget.installEventFilter(_wheel_guard)
+
+
 class SettingsPanel(QScrollArea):
     """
     Scrollable panel containing all slicing settings.
@@ -61,6 +82,9 @@ class SettingsPanel(QScrollArea):
 
         self._widgets = {}   # key → widget
         self._building = True
+        self._seam_ramp_row_frames: list = []
+        self._seam_ramp_follow_lbls: dict = {}   # n → QLabel shown on inactive rows
+        self._seam_ramp_active: int = 99   # all rows active by default
 
         # Debounce timer — batches rapid changes into one disk write
         self._save_timer = QTimer(self)
@@ -73,14 +97,17 @@ class SettingsPanel(QScrollArea):
         self._add_printer_group(layout)
         self._add_motion_group(layout)
         self._add_print_group(layout)
-        self._add_seam_ramp_group(layout)
         self._add_mode_group(layout)
         self._add_wave_group(layout)
+        self._add_seam_ramp_group(layout)   # after wave_group: uses layer_alternation
         self._add_base_group(layout)
         self._add_skirt_group(layout)
 
         layout.addStretch()
         self._building = False
+
+        # Install wheel-ignore filter on every spin/combo in this panel
+        self._apply_wheel_guard()
 
         # Restore last session's values (silently ignore if file missing/corrupt)
         self._load_from_disk()
@@ -294,51 +321,383 @@ class SettingsPanel(QScrollArea):
         self._dbl(f, "max_volumetric_speed", "Max vol. (mm³/s):",      12.0,  0.5, 50.0, 0.5,
                   tip="Maximum plastic flow rate in mm³/s. Limits print speed to prevent under-extrusion.\n"
                       "Your hotend's capability — typically 8–15mm³/s for standard, up to 40+ for high-flow")
+        self._dbl(f, "extrusion_multiplier", "Extrusion rate:",          1.0,  0.5,  2.0, 0.01,
+                  tip="Global extrusion multiplier applied to every E move.\n"
+                      "1.0 = 100% (normal).  0.95 = 5% less, 1.05 = 5% more.\n"
+                      "Use to compensate for over/under extrusion without re-slicing.")
         parent.addWidget(g)
 
     def _add_seam_ramp_group(self, parent):
-        g = QGroupBox("Seam Speed Ramp")
-        f = QFormLayout(g)
+        from PyQt6.QtWidgets import QFrame
+        g = QGroupBox("Layer Ramp")
+        outer = QVBoxLayout(g)
+        outer.setSpacing(4)
+        outer.setContentsMargins(6, 4, 6, 6)
 
-        chk = QCheckBox("Enable speed ramp after alternation")
+        chk = QCheckBox("Enable layer speed / extrusion ramp")
         chk.setChecked(False)
         chk.setToolTip(
-            "After each layer-alternation cycle boundary, ramp speed back up\n"
-            "over the specified number of layers.\n"
-            "Example with alternation=2, ramp=[25,50,100]:\n"
-            "  Cycle start → 25% → 50% → 100% → repeat"
+            "At each layer-alternation cycle, vary print speed and optionally\n"
+            "extrusion rate per layer.  Rows automatically match Alternation count."
         )
         chk.stateChanged.connect(self._emit)
         self._widgets["seam_ramp_enabled"] = chk
-        f.addRow("", chk)
+        outer.addWidget(chk)
 
-        # Individual speed % fields for up to 4 ramp layers
-        defaults = [25, 50, 75, 100]
-        for n in range(1, 5):
-            key = f"seam_ramp_pct_{n}"
-            spin = QSpinBox()
-            spin.setRange(1, 200)
-            spin.setValue(defaults[n - 1])
-            spin.setSuffix(" %")
-            spin.setFixedWidth(self._SPIN_W)
-            spin.setToolTip(
-                f"Print speed for layer {n} after each alternation boundary\n"
-                f"(% of the main print speed).\n"
-                f"Set to 100% to not slow this layer."
-            )
-            spin.valueChanged.connect(self._emit)
-            self._widgets[key] = spin
-            f.addRow(f"  Layer {n} speed:", spin)
+        # Container rebuilt whenever layer_alternation changes
+        self._seam_ramp_rows_widget = QWidget()
+        self._seam_ramp_rows_layout = QVBoxLayout(self._seam_ramp_rows_widget)
+        self._seam_ramp_rows_layout.setSpacing(3)
+        self._seam_ramp_rows_layout.setContentsMargins(0, 0, 0, 0)
 
-        note = QLabel(
-            "Tip: set ramp layers ≤ layer alternation period for the ramp\n"
-            "to complete before the next cycle starts."
+        # Vertical "active layers" slider + count label (bottom = all layers active)
+        self._seam_ramp_slider = QSlider(Qt.Orientation.Vertical)
+        self._seam_ramp_slider.setInvertedAppearance(True)
+        self._seam_ramp_slider.setRange(1, 2)   # updated in _rebuild_seam_ramp_rows
+        self._seam_ramp_slider.setValue(2)
+        self._seam_ramp_slider.setFixedWidth(22)
+        self._seam_ramp_slider.setToolTip(
+            "Active layers slider — drag up to reduce the number of\n"
+            "independently-configured layers.\n\n"
+            "Bottom = all layers are active (each has its own settings).\n"
+            "Any layer above the cutpoint copies the last active layer's settings.\n\n"
+            "NOTE: The slider marks are evenly spaced regardless of whether\n"
+            "the 'Var. extrusion' section is open — use the 'k/N' counter\n"
+            "above the slider to see exactly how many layers are active."
         )
-        note.setStyleSheet("color: #667; font-size: 10px;")
-        note.setWordWrap(True)
-        f.addRow("", note)
+        self._seam_ramp_slider.valueChanged.connect(self._on_seam_ramp_active_changed)
+
+        # Small counter label above the slider: shows "k/N" or "all"
+        self._seam_ramp_active_lbl = QLabel("all")
+        self._seam_ramp_active_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._seam_ramp_active_lbl.setStyleSheet(
+            "color: #9988bb; font-size: 9px; font-weight: bold;"
+        )
+        self._seam_ramp_active_lbl.setToolTip(
+            "Number of independently-configured layers / total layers.\n"
+            "'all' = every layer has its own settings."
+        )
+
+        slider_col = QWidget()
+        scl = QVBoxLayout(slider_col)
+        scl.setContentsMargins(0, 0, 0, 0)
+        scl.setSpacing(2)
+        scl.addWidget(self._seam_ramp_active_lbl)
+        scl.addWidget(self._seam_ramp_slider, stretch=1)
+
+        rows_slider_box = QWidget()
+        rsl = QHBoxLayout(rows_slider_box)
+        rsl.setContentsMargins(0, 0, 0, 0)
+        rsl.setSpacing(4)
+        rsl.addWidget(self._seam_ramp_rows_widget, stretch=1)
+        rsl.addWidget(slider_col)
+        outer.addWidget(rows_slider_box)
+
+        # Connect to layer_alternation (created in _add_wave_group just above)
+        self._widgets["layer_alternation"].valueChanged.connect(
+            self._rebuild_seam_ramp_rows
+        )
+        self._rebuild_seam_ramp_rows(self._widgets["layer_alternation"].value())
 
         parent.addWidget(g)
+
+    # ── Seam ramp dynamic rows ────────────────────────────────────────────────
+
+    def _collect_seam_ramp_layer_data(self) -> list:
+        """Return current per-layer settings as a list of dicts.
+        Inactive rows (past _seam_ramp_active) copy the last active layer's data."""
+        w = self._widgets
+        active = getattr(self, "_seam_ramp_active", 99)
+        result = []
+        last_active_data: dict = {}
+        n = 1
+        while f"seam_ramp_speed_{n}" in w:
+            if n <= active:
+                p2v_ramp_w = w.get(f"seam_ramp_p2v_ramp_{n}")
+                v2p_ramp_w = w.get(f"seam_ramp_v2p_ramp_{n}")
+                row_data = {
+                    "speed_pct":     w[f"seam_ramp_speed_{n}"].value(),
+                    "var_extrusion": w[f"seam_ramp_varx_{n}"].isChecked(),
+                    "peak_pct":      w[f"seam_ramp_peak_pct_{n}"].value(),
+                    "peak_ramp":     w[f"seam_ramp_peak_ramp_{n}"].currentText(),
+                    "p2v_rate":      w[f"seam_ramp_p2v_{n}"].value(),
+                    "p2v_ramp":      p2v_ramp_w.currentText() if p2v_ramp_w else "gradual",
+                    "valley_pct":    w[f"seam_ramp_valley_pct_{n}"].value(),
+                    "valley_ramp":   w[f"seam_ramp_valley_ramp_{n}"].currentText(),
+                    "v2p_rate":      w[f"seam_ramp_v2p_{n}"].value(),
+                    "v2p_ramp":      v2p_ramp_w.currentText() if v2p_ramp_w else "gradual",
+                }
+                last_active_data = row_data
+            else:
+                row_data = dict(last_active_data)
+            result.append(row_data)
+            n += 1
+        return result
+
+    def _restore_seam_ramp_row(self, n: int, vals: dict) -> None:
+        w = self._widgets
+        def _sv(key, val):
+            if key in w and val is not None:
+                try:
+                    if hasattr(w[key], "setValue"):
+                        w[key].setValue(val)
+                    elif hasattr(w[key], "setChecked"):
+                        w[key].setChecked(bool(val))
+                    elif hasattr(w[key], "setCurrentText"):
+                        w[key].setCurrentText(str(val))
+                except Exception:
+                    pass
+        _sv(f"seam_ramp_speed_{n}",       vals.get("speed_pct"))
+        _sv(f"seam_ramp_varx_{n}",        vals.get("var_extrusion", False))
+        _sv(f"seam_ramp_peak_pct_{n}",    vals.get("peak_pct"))
+        _sv(f"seam_ramp_peak_ramp_{n}",   vals.get("peak_ramp"))
+        _sv(f"seam_ramp_p2v_{n}",         vals.get("p2v_rate"))
+        _sv(f"seam_ramp_p2v_ramp_{n}",    vals.get("p2v_ramp"))
+        _sv(f"seam_ramp_valley_pct_{n}",  vals.get("valley_pct"))
+        _sv(f"seam_ramp_valley_ramp_{n}", vals.get("valley_ramp"))
+        _sv(f"seam_ramp_v2p_{n}",         vals.get("v2p_rate"))
+        _sv(f"seam_ramp_v2p_ramp_{n}",    vals.get("v2p_ramp"))
+
+    def _rebuild_seam_ramp_rows(self, count: int) -> None:
+        """Rebuild the per-layer rows to match `count` (= layer_alternation)."""
+        old_vals = self._collect_seam_ramp_layer_data()
+
+        # Remove stale widget refs
+        for k in [k for k in self._widgets
+                  if k.startswith("seam_ramp_") and k != "seam_ramp_enabled"]:
+            del self._widgets[k]
+
+        # Clear old row widgets
+        layout = self._seam_ramp_rows_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Build new rows, track frames and follow-labels for enable/disable
+        self._seam_ramp_row_frames = []
+        self._seam_ramp_follow_lbls = {}
+        defaults = [25, 50, 75, 100]
+        for n in range(1, count + 1):
+            row = self._make_seam_ramp_row(n, defaults[(n - 1) % 4])
+            layout.addWidget(row)
+            self._seam_ramp_row_frames.append(row)
+
+        # Sync slider range — all rows active by default after a rebuild
+        self._seam_ramp_active = count
+        if hasattr(self, "_seam_ramp_slider"):
+            self._seam_ramp_slider.blockSignals(True)
+            self._seam_ramp_slider.setRange(1, count)
+            self._seam_ramp_slider.setValue(count)
+            self._seam_ramp_slider.blockSignals(False)
+        if hasattr(self, "_seam_ramp_active_lbl"):
+            self._seam_ramp_active_lbl.setText("all")
+
+        # Restore saved values where available
+        for n, vals in enumerate(old_vals[:count], 1):
+            self._restore_seam_ramp_row(n, vals)
+
+        # Apply wheel-ignore filter to freshly created widgets
+        for w in self._seam_ramp_rows_widget.findChildren(
+                (QSpinBox, QDoubleSpinBox, QComboBox)):
+            _no_scroll(w)
+
+        if not self._building:
+            self._emit()
+
+    def _on_seam_ramp_active_changed(self, k: int) -> None:
+        """Slider moved: update which rows are independently active."""
+        self._seam_ramp_active = k
+        total = len(self._seam_ramp_row_frames)
+
+        # Update counter label
+        if hasattr(self, "_seam_ramp_active_lbl"):
+            self._seam_ramp_active_lbl.setText(
+                "all" if k >= total else f"{k}/{total}"
+            )
+
+        active_style = (
+            "QFrame { border: 1px solid #2a3248; border-radius: 3px; background: #0f1018; }"
+        )
+        inactive_style = (
+            "QFrame { border: 2px dashed #6a3a9a; border-radius: 3px; background: #07050f; }"
+        )
+
+        for i, frame in enumerate(self._seam_ramp_row_frames):
+            is_active = (i < k)
+            frame.setEnabled(is_active)
+            frame.setStyleSheet(active_style if is_active else inactive_style)
+
+        # Update "→ follows layer k" indicator labels
+        for n, lbl in self._seam_ramp_follow_lbls.items():
+            if n > k:
+                lbl.setText(f"→ L{k}")
+                lbl.setVisible(True)
+            else:
+                lbl.setVisible(False)
+
+        if not self._building:
+            self._emit()
+
+    def _apply_wheel_guard(self) -> None:
+        """Install wheel-ignore filter on every spin-box and combo-box in this panel."""
+        container = self.widget()
+        for w in container.findChildren((QSpinBox, QDoubleSpinBox, QComboBox)):
+            _no_scroll(w)
+
+    def _make_seam_ramp_row(self, n: int, default_speed: int = 100) -> "QWidget":
+        """Create a single collapsible layer ramp row."""
+        from PyQt6.QtWidgets import QFrame
+        _ss = "border: none; background: transparent;"
+
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { border: 1px solid #252a38; border-radius: 3px;"
+            " background: #0f1018; }"
+        )
+        vlay = QVBoxLayout(frame)
+        vlay.setContentsMargins(6, 4, 6, 4)
+        vlay.setSpacing(2)
+
+        # ── header row ──────────────────────────────────────────────────────
+        header = QWidget()
+        header.setStyleSheet(_ss)
+        hlay = QHBoxLayout(header)
+        hlay.setContentsMargins(0, 0, 0, 0)
+        hlay.setSpacing(4)
+
+        lbl = QLabel(f"Layer {n}")
+        lbl.setStyleSheet(f"color: #7a8aaa; font-size: 11px; font-weight: bold; {_ss}")
+        hlay.addWidget(lbl)
+
+        spd_lbl = QLabel("Speed:")
+        spd_lbl.setStyleSheet(f"color: #667; font-size: 11px; {_ss}")
+        hlay.addWidget(spd_lbl)
+
+        speed_spin = QSpinBox()
+        speed_spin.setRange(1, 200)
+        speed_spin.setValue(default_speed)
+        speed_spin.setSuffix(" %")
+        speed_spin.setFixedWidth(72)
+        speed_spin.setToolTip(f"Print speed for layer {n} as % of base print speed")
+        speed_spin.valueChanged.connect(self._emit)
+        self._widgets[f"seam_ramp_speed_{n}"] = speed_spin
+        hlay.addWidget(speed_spin)
+
+        hlay.addStretch()
+
+        varx_chk = QCheckBox("Var. extrusion")
+        varx_chk.setChecked(False)
+        varx_chk.setStyleSheet(f"font-size: 10px; color: #88a; {_ss}")
+        varx_chk.setToolTip("Enable wave-phase variable extrusion for this layer")
+        varx_chk.stateChanged.connect(self._emit)
+        self._widgets[f"seam_ramp_varx_{n}"] = varx_chk
+        hlay.addWidget(varx_chk)
+
+        # "→ L k" label — hidden while row is active, shown when row is inactive
+        follow_lbl = QLabel("")
+        follow_lbl.setStyleSheet(
+            f"color: #9055cc; font-size: 9px; font-style: italic; {_ss}"
+        )
+        follow_lbl.setToolTip("This layer is inactive — its settings are copied from the last active layer.")
+        follow_lbl.setVisible(False)
+        self._seam_ramp_follow_lbls[n] = follow_lbl
+        hlay.addWidget(follow_lbl)
+
+        vlay.addWidget(header)
+
+        # ── expandable extrusion section ────────────────────────────────────
+        extr = QWidget()
+        extr.setVisible(False)
+        extr.setStyleSheet(_ss)
+        elay = QFormLayout(extr)
+        elay.setContentsMargins(12, 2, 0, 2)
+        elay.setSpacing(3)
+        elay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        def _spin(key, lo, hi, default, tip, suffix=" %", width=70):
+            s = QSpinBox()
+            s.setRange(lo, hi)
+            s.setValue(default)
+            s.setSuffix(suffix)
+            s.setFixedWidth(width)
+            s.setToolTip(tip)
+            s.valueChanged.connect(self._emit)
+            self._widgets[key] = s
+            return s
+
+        def _combo(key, items, tip):
+            c = QComboBox()
+            c.addItems(items)
+            c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            c.setMinimumWidth(108)
+            c.setToolTip(tip)
+            c.currentIndexChanged.connect(self._emit)
+            self._widgets[key] = c
+            return c
+
+        _ramp_items = ["gradual", "parabolic", "straight"]
+
+        # Peak row
+        peak_box = QWidget(); peak_box.setStyleSheet(_ss)
+        pl = QHBoxLayout(peak_box); pl.setContentsMargins(0,0,0,0); pl.setSpacing(4)
+        pl.addWidget(_spin(f"seam_ramp_peak_pct_{n}", -100, 3000, 0,
+                           "+% extrusion at wave peak (+25 = 1.25× E)"))
+        pl.addWidget(_combo(f"seam_ramp_peak_ramp_{n}", _ramp_items,
+                            "Curve shape for the extrusion step at the wave peak.\n"
+                            "gradual = smooth S-curve (3t²–2t³)\n"
+                            "parabolic = sharp near the extreme (t²)\n"
+                            "straight = linear blend"))
+        pl.addStretch()
+        pk_lbl = QLabel("Peak:"); pk_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
+        elay.addRow(pk_lbl, peak_box)
+
+        p2v_box = QWidget(); p2v_box.setStyleSheet(_ss)
+        p2v_bl = QHBoxLayout(p2v_box); p2v_bl.setContentsMargins(0,0,0,0); p2v_bl.setSpacing(4)
+        p2v_bl.addWidget(_spin(f"seam_ramp_p2v_{n}", 0, 3000, 100,
+                               "E multiplier (%) while descending from peak → valley.\n"
+                               "100 = normal extrusion on the falling flank."))
+        p2v_bl.addWidget(_combo(f"seam_ramp_p2v_ramp_{n}", _ramp_items,
+                                "Curve shape for the descending flank (peak → valley).\n"
+                                "gradual = smooth S-curve\n"
+                                "parabolic = accelerating drop\n"
+                                "straight = linear"))
+        p2v_bl.addStretch()
+        p2v_lbl = QLabel("Peak→Valley:"); p2v_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
+        elay.addRow(p2v_lbl, p2v_box)
+
+        # Valley row
+        val_box = QWidget(); val_box.setStyleSheet(_ss)
+        vl = QHBoxLayout(val_box); vl.setContentsMargins(0,0,0,0); vl.setSpacing(4)
+        vl.addWidget(_spin(f"seam_ramp_valley_pct_{n}", -100, 3000, 0,
+                           "+% extrusion at wave valley"))
+        vl.addWidget(_combo(f"seam_ramp_valley_ramp_{n}", _ramp_items,
+                            "Curve shape for the extrusion step at the wave valley.\n"
+                            "gradual = smooth S-curve (3t²–2t³)\n"
+                            "parabolic = sharp near the extreme (t²)\n"
+                            "straight = linear blend"))
+        vl.addStretch()
+        va_lbl = QLabel("Valley:"); va_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
+        elay.addRow(va_lbl, val_box)
+
+        v2p_box = QWidget(); v2p_box.setStyleSheet(_ss)
+        v2p_bl = QHBoxLayout(v2p_box); v2p_bl.setContentsMargins(0,0,0,0); v2p_bl.setSpacing(4)
+        v2p_bl.addWidget(_spin(f"seam_ramp_v2p_{n}", 0, 3000, 100,
+                               "E multiplier (%) while rising from valley → peak.\n"
+                               "100 = normal extrusion on the rising flank."))
+        v2p_bl.addWidget(_combo(f"seam_ramp_v2p_ramp_{n}", _ramp_items,
+                                "Curve shape for the ascending flank (valley → peak).\n"
+                                "gradual = smooth S-curve\n"
+                                "parabolic = accelerating rise\n"
+                                "straight = linear"))
+        v2p_bl.addStretch()
+        v2p_lbl = QLabel("Valley→Peak:"); v2p_lbl.setStyleSheet(f"color:#779;font-size:10px;{_ss}")
+        elay.addRow(v2p_lbl, v2p_box)
+
+        vlay.addWidget(extr)
+        varx_chk.toggled.connect(extr.setVisible)
+
+        return frame
 
     def _add_mode_group(self, parent):
         g = QGroupBox("Printing Mode")
@@ -643,6 +1002,7 @@ class SettingsPanel(QScrollArea):
             "travel_speed":           w["travel_speed"].value(),
             "fan_speed":              w["fan_speed"].value(),
             "max_volumetric_speed":   w["max_volumetric_speed"].value(),
+            "extrusion_multiplier":   w["extrusion_multiplier"].value(),
             "print_accel":            w["print_accel"].value(),
             "travel_accel":           w["travel_accel"].value(),
             "z_hop":                  w["z_hop"].value(),
@@ -651,7 +1011,7 @@ class SettingsPanel(QScrollArea):
             "skirt_distance":         w["skirt_distance"].value(),
             "skirt_height":           w["skirt_height"].value(),
             "seam_ramp_enabled":      w["seam_ramp_enabled"].isChecked(),
-            "seam_ramp_pcts":         [w[f"seam_ramp_pct_{n}"].value() for n in range(1, 5)],
+            "seam_ramp_layers":       self._collect_seam_ramp_layer_data(),
             "skirt_loops":            w["skirt_loops"].value(),
         }
         if is_vase:
@@ -701,6 +1061,7 @@ class SettingsPanel(QScrollArea):
             _set_int("travel_speed",             ps.get("travel_speed"))
             _set_int("fan_speed",                ps.get("fan_speed"))
             _set_dbl("max_volumetric_speed",     ps.get("max_volumetric_speed"))
+            _set_dbl("extrusion_multiplier",     ps.get("extrusion_multiplier"))
             _set_int("print_accel",              ps.get("print_accel"))
             _set_int("travel_accel",             ps.get("travel_accel"))
             _set_dbl("z_hop",                    ps.get("z_hop"))
@@ -717,13 +1078,6 @@ class SettingsPanel(QScrollArea):
             _set_int("skirt_height",   ps.get("skirt_height"))
             _set_int("skirt_loops",    ps.get("skirt_loops"))
 
-            if ps.get("seam_ramp_enabled") is not None:
-                w["seam_ramp_enabled"].setChecked(bool(ps["seam_ramp_enabled"]))
-            ramp_pcts = ps.get("seam_ramp_pcts", [])
-            for n in range(1, 5):
-                if n - 1 < len(ramp_pcts):
-                    w[f"seam_ramp_pct_{n}"].setValue(int(ramp_pcts[n - 1]))
-
             _set_dbl("wave_amplitude",   ms.get("wave_amplitude"))
             if "wave_count" in ms and ms["wave_count"] is not None:
                 w["wave_freq_mode"].setCurrentIndex(0)
@@ -734,7 +1088,21 @@ class SettingsPanel(QScrollArea):
 
             _set_combo("wave_pattern",     ms.get("wave_pattern"))
             _set_int("wave_smoothness",    ms.get("wave_smoothness"))
+            # layer_alternation must be set before restoring seam ramp rows
             _set_int("layer_alternation",          ms.get("layer_alternation"))
+
+            # Restore seam ramp (rows already rebuilt by layer_alternation.setValue above)
+            if ps.get("seam_ramp_enabled") is not None:
+                w["seam_ramp_enabled"].setChecked(bool(ps["seam_ramp_enabled"]))
+            layers_data = ps.get("seam_ramp_layers", [])
+            if not layers_data:
+                # backward compat: old seam_ramp_pcts format
+                old_pcts = ps.get("seam_ramp_pcts", [])
+                if old_pcts:
+                    layers_data = [{"speed_pct": p} for p in old_pcts]
+            for n, vals in enumerate(layers_data, 1):
+                if f"seam_ramp_speed_{n}" in w:
+                    self._restore_seam_ramp_row(n, vals)
             _set_dbl("phase_offset",               ms.get("phase_offset"))
             _set_dbl("seam_shift",                 ms.get("seam_shift"))
             _set_combo("seam_position",            ms.get("seam_position"))
