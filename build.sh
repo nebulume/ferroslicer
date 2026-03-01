@@ -51,11 +51,7 @@ else
         "$APP_BUNDLE"
 fi
 
-# ── 4. Reset Local Network permission so macOS prompts on next launch ────────
-echo "▶ Resetting Local Network privacy permission…"
-tccutil reset LocalNetwork "$BUNDLE_ID" 2>/dev/null || true
-
-# ── 5. Refresh dock/Spotlight icon cache ─────────────────────────────────────
+# ── 4. Refresh dock/Spotlight icon cache ─────────────────────────────────────
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister \
   -f "$APP_BUNDLE" 2>/dev/null || true
 

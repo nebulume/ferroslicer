@@ -97,30 +97,19 @@ class _KlipperPoller(QThread):
         import traceback
         rs = dict(self._OFFLINE)
         try:
-            import requests as _rq
             from klipper.moonraker import MoonrakerClient
             client = MoonrakerClient(self._ip, self._port)
-            base   = client._base
-            self._log(f"polling {base}")
+            self._log(f"polling {client._base}")
 
-            # Try several endpoints in priority order; capture the real error.
-            _err = ""
-            _connected = False
-            for _path in ("/printer/info", "/api/version", "/server/info"):
-                try:
-                    _r = _rq.get(f"{base}{_path}", timeout=5.0)
-                    # Accept any 2xx/3xx as "reachable"
-                    if _r.status_code < 500:
-                        _connected = True
-                        break
-                    _err = f"HTTP {_r.status_code} on {base}{_path}"
-                except Exception as _e:
-                    _err = f"{type(_e).__name__}: {_e}  [{base}{_path}]"
-
-            self._log(f"connected={_connected}  err={_err!r}")
-
-            if not _connected:
-                rs["_error"] = _err or "no response on /printer/info, /api/version, /server/info"
+            # check_connection() uses _get() which tries requests then curl,
+            # so it works even when macOS Local Network privacy blocks Python sockets.
+            if not client.check_connection():
+                rs["_error"] = (
+                    f"Cannot reach Moonraker at {client._base}\n"
+                    "Check printer power, IP, and port.\n"
+                    "macOS: System Settings → Privacy & Security → Local Network → enable FerroSlicer"
+                )
+                self._log(f"offline: {client._base}")
                 self.status_ready.emit(rs)
                 return
 

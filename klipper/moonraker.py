@@ -19,6 +19,40 @@ class MoonrakerClient:
         self.port = port
         self._base = f"http://{host}:{port}" if port != 80 else f"http://{host}"
 
+    @staticmethod
+    def _curl_get(url: str, timeout: float = 5.0) -> Optional[Dict]:
+        """GET via system curl — works when macOS Local Network privacy blocks Python sockets."""
+        try:
+            import subprocess, json as _json
+            res = subprocess.run(
+                ["/usr/bin/curl", "-sf", "--max-time", str(int(timeout) + 1),
+                 "--connect-timeout", "5", url],
+                capture_output=True, text=True, timeout=int(timeout) + 3,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return _json.loads(res.stdout)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _curl_post(url: str, data=None, timeout: float = 30.0) -> Optional[Dict]:
+        """POST via system curl for JSON or empty-body requests."""
+        try:
+            import subprocess, json as _json
+            cmd = ["/usr/bin/curl", "-sf", "--max-time", str(int(timeout) + 1),
+                   "--connect-timeout", "5", "-X", "POST"]
+            if data:
+                cmd += ["-H", "Content-Type: application/json",
+                        "-d", _json.dumps(data)]
+            cmd.append(url)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=int(timeout) + 3)
+            if res.returncode == 0:
+                return _json.loads(res.stdout) if res.stdout.strip() else {}
+        except Exception:
+            pass
+        return None
+
     def _get(self, path: str, timeout: float = 5.0) -> Optional[Dict]:
         url = f"{self._base}{path}"
         # Primary: requests
@@ -27,52 +61,32 @@ class MoonrakerClient:
             r = requests.get(url, timeout=timeout)
             r.raise_for_status()
             return r.json()
-        except Exception as _primary_exc:
-            # On macOS, Python sockets can be blocked by Local Network privacy before
-            # the user has granted permission.  Fall back to the system curl binary
-            # (which lives outside the app bundle and has its own network entitlements).
-            import errno as _errno, os as _os
-            _no_route = (
-                hasattr(_primary_exc, "errno") and _primary_exc.errno == _errno.EHOSTUNREACH
-            )
-            _nested = (
-                hasattr(_primary_exc, "__context__") and
-                hasattr(getattr(_primary_exc, "__context__", None), "errno") and
-                getattr(_primary_exc.__context__, "errno", None) == _errno.EHOSTUNREACH
-            )
-            if not (_no_route or _nested or "No route to host" in str(_primary_exc)):
-                return None  # non-routing error — don't try curl
-            try:
-                import subprocess, json as _json
-                result = subprocess.run(
-                    ["/usr/bin/curl", "-s", "--max-time", str(int(timeout)),
-                     "--connect-timeout", "5", url],
-                    capture_output=True, text=True, timeout=int(timeout) + 2,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return _json.loads(result.stdout)
-            except Exception:
-                pass
-            return None
+        except Exception:
+            pass
+        # Fallback: system curl. Bypasses macOS Local Network privacy blocking
+        # that prevents Python sockets from reaching LAN hosts in a frozen .app.
+        return self._curl_get(url, timeout)
 
     def _post(self, path: str, data=None, files=None, timeout: float = 30.0) -> Optional[Dict]:
+        url = f"{self._base}{path}"
         try:
             import requests
             if files:
-                r = requests.post(f"{self._base}{path}", files=files, timeout=timeout)
+                r = requests.post(url, files=files, timeout=timeout)
             elif data:
-                r = requests.post(
-                    f"{self._base}{path}",
-                    json=data,
-                    headers={"Content-Type": "application/json"},
-                    timeout=timeout,
-                )
+                r = requests.post(url, json=data,
+                                  headers={"Content-Type": "application/json"},
+                                  timeout=timeout)
             else:
-                r = requests.post(f"{self._base}{path}", timeout=timeout)
+                r = requests.post(url, timeout=timeout)
             r.raise_for_status()
             return r.json()
-        except Exception as e:
-            return None
+        except Exception:
+            pass
+        # Fallback: curl (file uploads handled separately in upload_file)
+        if not files:
+            return self._curl_post(url, data=data, timeout=timeout)
+        return None
 
     def check_connection(self) -> bool:
         """Returns True if Moonraker is reachable."""
@@ -99,26 +113,40 @@ class MoonrakerClient:
         Returns the filename as registered by Moonraker, or None on failure.
         """
         filename = Path(gcode_path).name
+        url = f"{self._base}/server/files/upload"
+
+        # Primary: requests multipart upload
         try:
             import requests
             with open(gcode_path, "rb") as f:
                 files = {
                     "file": (filename, f, "application/octet-stream"),
-                    "path": (None, subdir) if subdir else None,
                     "root": (None, "gcodes"),
                 }
-                # Remove None entries
-                files = {k: v for k, v in files.items() if v is not None}
-                r = requests.post(
-                    f"{self._base}/server/files/upload",
-                    files=files,
-                    timeout=60,
-                )
+                if subdir:
+                    files["path"] = (None, subdir)
+                r = requests.post(url, files=files, timeout=60)
                 r.raise_for_status()
-                data = r.json()
-                return data.get("item", {}).get("path", filename)
-        except Exception as e:
-            return None
+                return r.json().get("item", {}).get("path", filename)
+        except Exception:
+            pass
+
+        # Fallback: curl multipart (works when macOS blocks Python sockets in .app)
+        try:
+            import subprocess, json as _json
+            cmd = ["/usr/bin/curl", "-sf", "--max-time", "65", "--connect-timeout", "5",
+                   "-F", f"file=@{gcode_path};type=application/octet-stream",
+                   "-F", "root=gcodes"]
+            if subdir:
+                cmd += ["-F", f"path={subdir}"]
+            cmd.append(url)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=68)
+            if res.returncode == 0 and res.stdout.strip():
+                return _json.loads(res.stdout).get("item", {}).get("path", filename)
+        except Exception:
+            pass
+
+        return None
 
     def start_print(self, filename: str) -> bool:
         """Tell Moonraker to start printing the given filename."""
