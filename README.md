@@ -109,6 +109,9 @@ Instead of flat, uniform layers, FerroSlicer displaces each extrusion path outwa
 - Named preset snapshots (save / load / delete)
 - Last-used settings restored on startup
 - Per-platform data paths: `data/` when running from source, `~/Documents/FerroSlicer/` for the bundled `.app`
+| STL Preview | GCode Viewer | Settings | Gcode Explorer |
+|---|---|---|---|
+| <img width="1477" height="958" alt="Screenshot 2026-02-25 at 00 28 31" src="https://github.com/user-attachments/assets/8bb644f5-c818-467b-9e1a-fa6351e1aaa7" /> | <img width="1480" height="959" alt="Screenshot 2026-02-25 at 00 29 40" src="https://github.com/user-attachments/assets/21eb509c-626c-4927-a3fa-a23a9e5267d7" /> | <img width="677" height="955" alt="Screenshot 2026-02-25 at 00 15 26" src="https://github.com/user-attachments/assets/533c1669-d650-41c0-b936-f3d90c89a8f0" /> | <img width="1401" height="816" alt="Screenshot 2026-02-25 at 00 26 12" src="https://github.com/user-attachments/assets/659eaf45-4b10-422e-91cd-243ae06f0c1d" /> |
 
 ---
 
